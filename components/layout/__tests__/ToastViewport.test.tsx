@@ -17,10 +17,20 @@ describe("ToastViewport", () => {
     vi.useRealTimers();
   });
 
+  it("runs a toast action once and dismisses the toast", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    useToastStore.getState().pushToast({ message: "Text transformed.", durationMs: null, action: { label: "Undo", onAction } });
+    render(<ToastViewport />);
+    await user.click(screen.getByRole("button", { name: "Undo" }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("renders a dismissible icon toast and closes it from the X button", async () => {
     const user = userEvent.setup();
     useToastStore.getState().pushToast({
-      message: "The two documents are completely identical.",
+      message: "Information saved.",
       tone: "info",
       durationMs: null,
       icon: "info",
@@ -31,6 +41,7 @@ describe("ToastViewport", () => {
 
     const toast = screen.getByRole("status");
     expect(toast).toHaveClass("pointer-events-auto");
+    expect(toast).toHaveClass("border-info-border", "bg-info-bg");
     expect(toast.querySelector("svg")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Dismiss notification" }));

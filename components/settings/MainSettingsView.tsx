@@ -1,16 +1,22 @@
 "use client";
 
 import { useMemo } from "react";
-import { MdSettings, MdRestartAlt } from "react-icons/md";
+import { MdSettings } from "react-icons/md";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageContent } from "@/components/layout/PageContent";
 import { useSettingsStore } from "@/store/useSettingsStore";
-import { AVAILABLE_THEMES, getThemeHighlightDefaults } from "@/config/themes";
+import { getThemeHighlightDefaults } from "@/config/themes";
 import { getThemeDefaultsAsCustomColors } from "@/utils/highlightColors";
 import { type AppSettings, TimeFormat } from "@/types/settings";
 import { Switch } from "@/components/ui/Switch";
 import { ColorInput } from "@/components/ui/ColorInput";
 import { SelectDropdown } from "@/components/ui/SelectDropdown";
 import { formatDateOnlyWithSettings } from "@/utils/formatters";
-import { getSectionResetButtonClass, isSettingsSectionDirty } from "@/utils/settingsReset";
+import { isSettingsSectionDirty } from "@/utils/settingsReset";
+import { OptionsSection } from "./OptionsSection";
+import { Button } from "@/components/ui/Button";
+import { ThemeSelect } from "./ThemeSelect";
+import { DiffColorPreview } from "./DiffColorPreview";
 
 const DATE_FORMAT_PATTERNS = [
   "yyyy-MM-dd",
@@ -49,44 +55,20 @@ export function MainSettingsView() {
     }));
   }, []);
 
-  const handleThemeChange = (themeId: string) => {
-    updateSettings({ theme: themeId });
-  };
-
   const handleResetCustomColorsToThemeDefaults = () => {
     updateSettings(getThemeDefaultsAsCustomColors(settings.theme));
   };
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg-secondary bg-linear-to-br from-accent-primary/10 via-transparent to-accent-primary/5">
-      <div className="flex h-(--header-height) shrink-0 items-center justify-between border-b border-border-default bg-bg-primary px-3 sm:px-6">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <MdSettings className="text-xl sm:text-2xl text-text-secondary" />
-          <h2 className="text-lg sm:text-xl font-bold text-text-primary">Settings</h2>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-3 sm:p-6 custom-scrollbar">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 sm:gap-6">
-          <div className="flex flex-col gap-2 rounded-md border border-border-default bg-bg-primary p-3 sm:p-4 shadow-sm transition-all duration-(--duration-medium) hover:border-accent-primary hover:shadow-md">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Appearance</h3>
-              <button
-                onClick={() => resetSectionToDefaults(APPEARANCE_SECTION_KEYS)}
-                className={getSectionResetButtonClass(isAppearanceSectionDirty)}
-                title="Restore section defaults"
-              >
-                <MdRestartAlt className="text-lg" />
-              </button>
-            </div>
+    <PageContent className="@container/settings">
+        <PageHeader title="Settings" description="Make CompareCode your own. Changes are saved automatically." icon={MdSettings} />
+        <div className="flex w-full flex-col gap-6">
+          <OptionsSection density="comfortable" title="Appearance" description="Theme and text difference highlights." isDirty={isAppearanceSectionDirty} onReset={() => resetSectionToDefaults(APPEARANCE_SECTION_KEYS)}>
+            <div className="grid items-start gap-6 pt-4 @3xl/settings:grid-cols-2">
+            <div className="@container/colors min-w-0 space-y-4">
             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-2 gap-2">
               <span className="text-sm sm:text-base font-medium text-text-primary">Theme</span>
-              <SelectDropdown
-                className="w-full sm:w-48"
-                value={settings.theme}
-                onChange={handleThemeChange}
-                options={AVAILABLE_THEMES.map((theme) => ({ value: theme.id, label: theme.name }))}
-              />
+              <ThemeSelect className="w-full sm:w-48" />
             </div>
 
             <div className="mt-2">
@@ -120,18 +102,19 @@ export function MainSettingsView() {
 
             {settings.useCustomHighlightColors && (
               <div className="mt-2 space-y-3">
-                <button
-                  type="button"
-                  className="w-full sm:w-auto text-text-secondary hover:text-accent-primary transition-colors px-3 py-1.5 rounded border border-border-default hover:bg-hover-overlay text-sm font-medium"
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full sm:w-auto"
                   onClick={handleResetCustomColorsToThemeDefaults}
                 >
                   Reset theme defaults
-                </button>
+                </Button>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 @min-[32rem]/colors:grid-cols-2">
                   <div className="flex flex-col gap-3">
                     <ColorInput
-                      label="Original Foreground"
+                      label="Original foreground"
                       value={settings.customDiffRemovedFg}
                       onChange={(value) => updateSettings({ customDiffRemovedFg: value })}
                       onRestoreDefault={() => updateSettings({ customDiffRemovedFg: themeHighlightDefaults.diffRemovedFg })}
@@ -143,7 +126,7 @@ export function MainSettingsView() {
                       pickerFallback="#fdb8c0"
                     />
                     <ColorInput
-                      label="Original Background"
+                      label="Original background"
                       value={settings.customDiffRemovedBg}
                       onChange={(value) => updateSettings({ customDiffRemovedBg: value })}
                       onRestoreDefault={() => updateSettings({ customDiffRemovedBg: themeHighlightDefaults.diffRemovedBg })}
@@ -158,7 +141,7 @@ export function MainSettingsView() {
 
                   <div className="flex flex-col gap-3">
                     <ColorInput
-                      label="Modified Foreground"
+                      label="Modified foreground"
                       value={settings.customDiffAddedFg}
                       onChange={(value) => updateSettings({ customDiffAddedFg: value })}
                       onRestoreDefault={() => updateSettings({ customDiffAddedFg: themeHighlightDefaults.diffAddedFg })}
@@ -170,7 +153,7 @@ export function MainSettingsView() {
                       pickerFallback="#acf2bd"
                     />
                     <ColorInput
-                      label="Modified Background"
+                      label="Modified background"
                       value={settings.customDiffAddedBg}
                       onChange={(value) => updateSettings({ customDiffAddedBg: value })}
                       onRestoreDefault={() => updateSettings({ customDiffAddedBg: themeHighlightDefaults.diffAddedBg })}
@@ -185,34 +168,28 @@ export function MainSettingsView() {
                 </div>
               </div>
             )}
-          </div>
-
-          <div className="flex flex-col gap-2 rounded-md border border-border-default bg-bg-primary p-3 sm:p-4 shadow-sm transition-all duration-(--duration-medium) hover:border-accent-primary hover:shadow-md">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Date & Time</h3>
-              <button
-                onClick={() => resetSectionToDefaults(DATE_TIME_SECTION_KEYS)}
-                className={getSectionResetButtonClass(isDateTimeSectionDirty)}
-                title="Restore section defaults"
-              >
-                <MdRestartAlt className="text-lg" />
-              </button>
             </div>
+            <DiffColorPreview />
+            </div>
+          </OptionsSection>
 
-            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-2 gap-2">
-              <span className="text-sm sm:text-base font-medium text-text-primary">Date Format</span>
+          <OptionsSection density="comfortable" title="Date & time" description="Choose how dates and times appear across the application." isDirty={isDateTimeSectionDirty} onReset={() => resetSectionToDefaults(DATE_TIME_SECTION_KEYS)}>
+            <div className="grid gap-6 pt-4 @3xl/settings:grid-cols-2">
+
+            <div className="flex min-w-0 flex-col gap-2">
+              <span className="text-sm sm:text-base font-medium text-text-primary">Date format</span>
               <SelectDropdown
-                className="w-full sm:w-48"
+                className="w-full"
                 value={settings.dateFormat}
                 onChange={(value) => updateSettings({ dateFormat: value })}
                 options={dateFormatOptions}
               />
             </div>
 
-            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mt-2 gap-2">
-              <span className="text-sm sm:text-base font-medium text-text-primary">Time Format</span>
+            <div className="flex min-w-0 flex-col gap-2">
+              <span className="text-sm sm:text-base font-medium text-text-primary">Time format</span>
               <SelectDropdown
-                className="w-full sm:w-48"
+                className="w-full"
                 value={settings.timeFormat}
                 onChange={(value) => updateSettings({ timeFormat: value as TimeFormat })}
                 options={[
@@ -221,13 +198,9 @@ export function MainSettingsView() {
                 ]}
               />
             </div>
-          </div>
+            </div>
+          </OptionsSection>
         </div>
-      </div>
-
-      <div className="p-4 text-center text-xs font-medium text-text-secondary shrink-0">
-        Version 1.0.0
-      </div>
-    </div>
+      </PageContent>
   );
 }

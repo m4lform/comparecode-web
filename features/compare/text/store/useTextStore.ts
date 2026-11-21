@@ -5,10 +5,22 @@ import { MergeDirection } from "@/types/ui";
 import { TextCompareService } from "@/features/compare/text/services/TextCompareService";
 import { MergeService } from "@/features/compare/text/services/mergeService";
 import { HistoryService } from "@/services/historyService";
+import { reportHistoryWriteError } from "@/store/reportHistoryWriteError";
 import { HistoryActionDirection } from "@/types/history";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { scrollToBlockInDOM, scrollToTopInDOM, scrollToBottomInDOM } from "@/features/compare/text/utils/scrollHelpers";
-import { syncIdenticalDocumentsToast } from "@/features/compare/text/utils/identicalDocumentsToast";
+import { resolveHiddenRanges } from "@/features/compare/text/hooks/useHiddenRanges";
+import { useTextUIStore } from "@/features/compare/text/store/useTextUIStore";
+
+interface TextPair {
+  left: string;
+  right: string;
+}
+
+export interface ManualEdit {
+  before: TextPair;
+  after: TextPair;
+}
 
 interface EditorState {
   leftText: string;
@@ -16,15 +28,23 @@ interface EditorState {
   historySessionId: string | null;
   historyRefreshKey: number;
   comparisonResult: ComparisonResult | null;
+  areComparedTextsIdentical: boolean;
   totalSelectableBlocks: number;
   currentBlockIndex: number;
   setHistorySessionId: (sessionId: string | null) => void;
+  trackHistorySession: (sessionPromise: Promise<string>) => Promise<string>;
+  queueHistoryWrite: <T>(task: () => Promise<T>) => Promise<T>;
   bumpHistoryRefreshKey: () => void;
+  markHistorySnapshot: (left: string, right: string) => void;
+  prepareManualEdit: (next: TextPair | null) => ManualEdit | null;
+  writeManualEdit: (sessionId: string, edit: ManualEdit | null) => Promise<void>;
   setLeftText: (text: string) => void;
   setRightText: (text: string) => void;
+  importText: (side: "left" | "right", text: string) => void;
   swapTexts: () => void;
   clearContent: () => void;
   compare: (settings: CompareSettings) => void;
+  recompute: (settings: CompareSettings) => void;
   selectBlock: (blockId: string | null) => void;
   mergeBlock: (block: ChangeBlock, direction: MergeDirection, settings: CompareSettings) => void;
   undoMergeStep: (settings: CompareSettings) => Promise<"applied" | "not-available" | "no-session">;
@@ -37,9 +57,47 @@ interface EditorState {
   scrollToBottom: () => void;
 }
 
+function lineSpan(start: number, lines: ChangeBlock["oldLines"]): [number, number] {
+  return [start, start + Math.max(1, lines.filter((line) => line.kind !== DiffChangeType.Imaginary).length)];
+}
+
+function overlaps([aStart, aEnd]: [number, number], [bStart, bEnd]: [number, number]): boolean {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+export function findMatchingBlock(blocks: ChangeBlock[], previous: ChangeBlock): ChangeBlock | undefined {
+  const oldSpan = lineSpan(previous.startIndexOld, previous.oldLines);
+  const newSpan = lineSpan(previous.startIndexNew, previous.newLines);
+  return blocks.find((block) => block.kind !== BlockType.Unchanged &&
+    (overlaps(lineSpan(block.startIndexOld, block.oldLines), oldSpan) || overlaps(lineSpan(block.startIndexNew, block.newLines), newSpan)));
+}
+
 export const useEditorStore = create<EditorState>((set, get) => {
   let pendingHistorySessionPromise: Promise<string> | null = null;
   let pendingHistorySessionVersion = 0;
+  let comparedInputs: { left: string; right: string } | null = null;
+  let historyQueue: Promise<unknown> = Promise.resolve();
+  let knownSnapshot: TextPair | null = null;
+
+  const takeManualEdit = (next: TextPair | null): ManualEdit | null => {
+    const { leftText, rightText } = get();
+    const edit = knownSnapshot && (knownSnapshot.left !== leftText || knownSnapshot.right !== rightText)
+      ? { before: knownSnapshot, after: { left: leftText, right: rightText } }
+      : null;
+    knownSnapshot = next ?? { left: leftText, right: rightText };
+    return edit;
+  };
+
+  const writeManualEdit = async (sessionId: string, edit: ManualEdit | null): Promise<void> => {
+    if (!edit) return;
+    await HistoryService.appendEditStepAsync(sessionId, edit.before.left, edit.before.right, edit.after.left, edit.after.right);
+  };
+
+  const queueHistoryWrite = <T,>(task: () => Promise<T>): Promise<T> => {
+    const run = historyQueue.then(task);
+    historyQueue = run.catch(() => undefined);
+    return run;
+  };
 
   const invalidatePendingHistorySession = () => {
     pendingHistorySessionVersion += 1;
@@ -84,6 +142,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
   historySessionId: null,
   historyRefreshKey: 0,
   comparisonResult: null,
+  areComparedTextsIdentical: false,
   totalSelectableBlocks: 0,
   currentBlockIndex: 0,
 
@@ -91,11 +150,55 @@ export const useEditorStore = create<EditorState>((set, get) => {
     invalidatePendingHistorySession();
     set({ historySessionId: sessionId });
   },
+  trackHistorySession: (sessionPromise: Promise<string>) => {
+    invalidatePendingHistorySession();
+    set({ historySessionId: null });
+    const requestVersion = pendingHistorySessionVersion;
+    const trackedPromise = sessionPromise
+      .then((sessionId) => {
+        if (requestVersion === pendingHistorySessionVersion) {
+          set({ historySessionId: sessionId });
+        }
+        return sessionId;
+      })
+      .finally(() => {
+        if (pendingHistorySessionPromise === trackedPromise) {
+          pendingHistorySessionPromise = null;
+        }
+      });
+    pendingHistorySessionPromise = trackedPromise;
+    return trackedPromise;
+  },
+  queueHistoryWrite,
   bumpHistoryRefreshKey: () => set((state) => ({ historyRefreshKey: state.historyRefreshKey + 1 })),
+  markHistorySnapshot: (left: string, right: string) => {
+    knownSnapshot = { left, right };
+  },
+  prepareManualEdit: takeManualEdit,
+  writeManualEdit,
 
-  setLeftText: (text: string) => set({ leftText: text }),
+  setLeftText: (text: string) => set({ leftText: text, areComparedTextsIdentical: false }),
 
-  setRightText: (text: string) => set({ rightText: text }),
+  setRightText: (text: string) => set({ rightText: text, areComparedTextsIdentical: false }),
+
+  importText: (side, text) => {
+    invalidatePendingHistorySession();
+    const current = get();
+    const leftText = side === "left" ? text : current.leftText;
+    const rightText = side === "right" ? text : current.rightText;
+    comparedInputs = null;
+    knownSnapshot = null;
+    set({
+      leftText,
+      rightText,
+      comparisonResult: null,
+      areComparedTextsIdentical: false,
+      historySessionId: null,
+      historyRefreshKey: current.historyRefreshKey + 1,
+      totalSelectableBlocks: 0,
+      currentBlockIndex: 0
+    });
+  },
 
   swapTexts: () => {
     const { leftText, rightText } = get();
@@ -104,29 +207,48 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
   clearContent: () => {
     invalidatePendingHistorySession();
+    comparedInputs = null;
+    knownSnapshot = null;
     set({
       leftText: "",
       rightText: "",
       historySessionId: null,
       historyRefreshKey: 0,
       comparisonResult: null,
+      areComparedTextsIdentical: false,
       totalSelectableBlocks: 0,
       currentBlockIndex: 0
     });
-    syncIdenticalDocumentsToast("", "");
   },
 
   compare: (settings: CompareSettings) => {
     const { leftText, rightText } = get();
     const result = TextCompareService.compare(leftText, rightText, settings);
-    const selectableBlocks = result.blocks.filter(b => b.kind !== BlockType.Unchanged && !(settings.ignoreWhitespace && b.isWhitespaceChange));
+    comparedInputs = { left: leftText, right: rightText };
+    const selectableBlocks = result.blocks.filter(b => b.kind !== BlockType.Unchanged);
 
     set({
       comparisonResult: result,
+      areComparedTextsIdentical: Boolean(leftText || rightText) && leftText === rightText,
       totalSelectableBlocks: selectableBlocks.length,
       currentBlockIndex: 0
     });
-    syncIdenticalDocumentsToast(leftText, rightText);
+  },
+
+  recompute: (settings: CompareSettings) => {
+    const { leftText, rightText, comparisonResult: previous } = get();
+    const result = TextCompareService.compare(leftText, rightText, settings);
+    comparedInputs = { left: leftText, right: rightText };
+    const previousSelection = previous?.blocks.find((block) => block.isSelected);
+    const selectedId = previousSelection ? findMatchingBlock(result.blocks, previousSelection)?.id ?? null : null;
+    const blocks = selectedId ? result.blocks.map((block) => block.id === selectedId ? { ...block, isSelected: true } : block) : result.blocks;
+    const selectableBlocks = blocks.filter((block) => block.kind !== BlockType.Unchanged);
+    set({
+      comparisonResult: { ...result, blocks },
+      areComparedTextsIdentical: Boolean(leftText || rightText) && leftText === rightText,
+      totalSelectableBlocks: selectableBlocks.length,
+      currentBlockIndex: selectedId ? selectableBlocks.findIndex((block) => block.id === selectedId) + 1 : 0
+    });
   },
 
   selectBlock: (blockId: string | null) => {
@@ -135,21 +257,23 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return;
     }
 
+    const eligibleId = currentResult.blocks.some(b => b.id === blockId && b.kind !== BlockType.Unchanged) ? blockId : null;
     const updatedBlocks = currentResult.blocks.map(b => ({
       ...b,
-      isSelected: b.id === blockId
+      isSelected: b.id === eligibleId
     }));
-    const settings = useSettingsStore.getState().settings;
-    const selectableBlocks = updatedBlocks.filter(b => b.kind !== BlockType.Unchanged && !(settings.ignoreWhitespace && b.isWhitespaceChange));
-    const currentIndex = blockId ? selectableBlocks.findIndex(b => b.id === blockId) + 1 : 0;
+    const selectableBlocks = updatedBlocks.filter(b => b.kind !== BlockType.Unchanged);
+    const currentIndex = eligibleId ? selectableBlocks.findIndex(b => b.id === eligibleId) + 1 : 0;
     set({
-      comparisonResult: { blocks: updatedBlocks },
+      comparisonResult: { ...currentResult, blocks: updatedBlocks },
       totalSelectableBlocks: selectableBlocks.length,
       currentBlockIndex: currentIndex
     });
   },
 
   mergeBlock: (block: ChangeBlock, direction: MergeDirection, settings: CompareSettings) => {
+    if (block.kind === BlockType.Unchanged || !get().comparisonResult?.blocks.some((candidate) => candidate === block) ||
+      comparedInputs?.left !== get().leftText || comparedInputs?.right !== get().rightText) return;
     const { leftText, rightText, currentBlockIndex, historySessionId } = get();
     const beforeLeft = leftText;
     const beforeRight = rightText;
@@ -157,15 +281,17 @@ export const useEditorStore = create<EditorState>((set, get) => {
     let newRight = rightText;
 
     if (direction === MergeDirection.LeftToRight) {
-      newRight = MergeService.mergeBlock(rightText, block, direction);
+      newRight = MergeService.mergeBlock(rightText, leftText, block, direction);
     } else {
-      newLeft = MergeService.mergeBlock(leftText, block, direction);
+      newLeft = MergeService.mergeBlock(leftText, rightText, block, direction);
     }
 
+    const manualEdit = takeManualEdit({ left: newLeft, right: newRight });
     set({ leftText: newLeft, rightText: newRight });
 
     const persistMergeStep = async (): Promise<void> => {
       const sessionId = historySessionId ?? await resolveHistorySessionId(beforeLeft, beforeRight);
+      await writeManualEdit(sessionId, manualEdit);
 
       const stepDirection = direction === MergeDirection.LeftToRight
         ? HistoryActionDirection.LeftToRight
@@ -190,7 +316,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       get().bumpHistoryRefreshKey();
     };
 
-    void persistMergeStep();
+    void queueHistoryWrite(persistMergeStep).catch(reportHistoryWriteError);
 
     get().compare(settings);
 
@@ -198,7 +324,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     if (appSettings.isContinuousMergeEnabled) {
       const newResult = get().comparisonResult;
       if (newResult) {
-        const newSelectableBlocks = newResult.blocks.filter(b => b.kind !== BlockType.Unchanged && !(settings.ignoreWhitespace && b.isWhitespaceChange));
+        const newSelectableBlocks = newResult.blocks.filter(b => b.kind !== BlockType.Unchanged);
         let targetIndex = currentBlockIndex - 1;
 
         if (targetIndex >= newSelectableBlocks.length) {
@@ -212,11 +338,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
     }
 
-    const { leftText: afterLeftText, rightText: afterRightText } = get();
-    syncIdenticalDocumentsToast(afterLeftText, afterRightText);
   },
 
-  undoMergeStep: async (settings: CompareSettings) => {
+  undoMergeStep: (settings: CompareSettings) => queueHistoryWrite(async () => {
     let { historySessionId } = get();
     if (!historySessionId && pendingHistorySessionPromise) {
       historySessionId = await pendingHistorySessionPromise;
@@ -226,20 +350,21 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return "no-session";
     }
 
+    await writeManualEdit(historySessionId, takeManualEdit(null));
     const snapshot = await HistoryService.undoMergeStepAsync(historySessionId);
     if (!snapshot) {
       return "not-available";
     }
 
+    knownSnapshot = { left: snapshot.originalText, right: snapshot.modifiedText };
     set({ leftText: snapshot.originalText, rightText: snapshot.modifiedText });
     get().compare(settings);
     get().selectBlock(null);
     get().bumpHistoryRefreshKey();
-    syncIdenticalDocumentsToast(snapshot.originalText, snapshot.modifiedText);
     return "applied";
-  },
+  }),
 
-  redoMergeStep: async (settings: CompareSettings) => {
+  redoMergeStep: (settings: CompareSettings) => queueHistoryWrite(async () => {
     let { historySessionId } = get();
     if (!historySessionId && pendingHistorySessionPromise) {
       historySessionId = await pendingHistorySessionPromise;
@@ -249,24 +374,25 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return "no-session";
     }
 
+    await writeManualEdit(historySessionId, takeManualEdit(null));
     const snapshot = await HistoryService.redoMergeStepAsync(historySessionId);
     if (!snapshot) {
       return "not-available";
     }
 
+    knownSnapshot = { left: snapshot.originalText, right: snapshot.modifiedText };
     set({ leftText: snapshot.originalText, rightText: snapshot.modifiedText });
     get().compare(settings);
     get().selectBlock(null);
     get().bumpHistoryRefreshKey();
-    syncIdenticalDocumentsToast(snapshot.originalText, snapshot.modifiedText);
     return "applied";
-  },
+  }),
 
   loadFromHistory: (left: string, right: string, settings: CompareSettings, sessionId: string | null = null) => {
     invalidatePendingHistorySession();
+    knownSnapshot = sessionId ? { left, right } : null;
     set({ leftText: left, rightText: right, historySessionId: sessionId });
     get().compare(settings);
-    syncIdenticalDocumentsToast(left, right);
   },
 
   jumpToNextBlock: () => {
@@ -275,8 +401,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return;
     }
 
-    const settings = useSettingsStore.getState().settings;
-    const selectableBlocks = currentResult.blocks.filter(b => b.kind !== BlockType.Unchanged && !(settings.ignoreWhitespace && b.isWhitespaceChange));
+    const selectableBlocks = currentResult.blocks.filter(b => b.kind !== BlockType.Unchanged);
     if (selectableBlocks.length === 0) {
       return;
     }
@@ -311,8 +436,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return;
     }
 
-    const settings = useSettingsStore.getState().settings;
-    const selectableBlocks = currentResult.blocks.filter(b => b.kind !== BlockType.Unchanged && !(settings.ignoreWhitespace && b.isWhitespaceChange));
+    const selectableBlocks = currentResult.blocks.filter(b => b.kind !== BlockType.Unchanged);
     if (selectableBlocks.length === 0) {
       return;
     }
@@ -343,7 +467,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
   scrollToBlock: (blockId: string) => {
     const currentResult = get().comparisonResult;
-    scrollToBlockInDOM(currentResult, blockId);
+    const hiddenRanges = resolveHiddenRanges(currentResult, useSettingsStore.getState().settings, useTextUIStore.getState().unchangedExpansions);
+    scrollToBlockInDOM(currentResult, blockId, hiddenRanges);
   },
 
   scrollToTop: () => {

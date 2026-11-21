@@ -1,0 +1,103 @@
+import { render, screen } from "@testing-library/react";
+import { useState } from "react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OptionsView, TextLayoutControl, TextPrecisionControl, TextTestButton } from "../OptionsView";
+import { defaultSettings } from "@/config/defaults";
+import { SettingsService } from "@/services/settingsService";
+import { useSettingsStore } from "@/store/useSettingsStore";
+import { useTextUIStore } from "@/features/compare/text/store/useTextUIStore";
+import { useTextStore } from "@/features/compare/text/store/useTextStore";
+import { originalTestText, modifiedTestText } from "@/utils/testData";
+import { PrecisionLevel, ViewMode } from "@/types/settings";
+
+const executeCompare = vi.hoisted(() => vi.fn());
+vi.mock("@/features/compare/text/hooks/useTextCompareActions", () => ({
+  useTextCompareActions: () => ({ executeCompare })
+}));
+
+function ControlsHarness() {
+  const showTextTest = useTextUIStore((state) => state.showTextTest);
+  const [expanded, setExpanded] = useState(false);
+  return <>{showTextTest && <TextTestButton />}<button onClick={() => setExpanded(!expanded)}>Options</button>{expanded ? <OptionsView /> : <><TextPrecisionControl /><TextLayoutControl /></>}</>;
+}
+
+describe("Text options controls", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    executeCompare.mockClear();
+    vi.spyOn(SettingsService, "saveSettings").mockImplementation(() => {});
+    useSettingsStore.setState({ settings: { ...defaultSettings, fontSize: 20 }, isLoaded: true });
+    useTextUIStore.setState({ showTextTest: useTextUIStore.getInitialState().showTextTest });
+  });
+
+  it("updates compact choices and preserves section reset boundaries", async () => {
+    const user = userEvent.setup();
+    render(<ControlsHarness />);
+    await user.click(screen.getByRole("radio", { name: "Character" }));
+    await user.click(screen.getByRole("radio", { name: "Unified" }));
+    expect(useSettingsStore.getState().settings).toMatchObject({ precision: PrecisionLevel.Character, viewMode: ViewMode.Unified });
+    await user.click(screen.getByRole("button", { name: "Options" }));
+    expect(screen.getAllByRole("radio", { name: "Character" })).toHaveLength(1);
+    expect(screen.getByRole("radio", { name: "Character" })).toHaveAttribute("aria-checked", "true");
+    await user.click(screen.getByRole("button", { name: "Restore Comparison defaults" }));
+    expect(useSettingsStore.getState().settings).toMatchObject({ precision: defaultSettings.precision, viewMode: ViewMode.Unified, fontSize: 20 });
+    await user.click(screen.getByRole("button", { name: "Restore Layout defaults" }));
+    expect(screen.getByRole("radio", { name: "Split" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByRole("button", { name: "Reset to defaults", exact: true })).not.toBeInTheDocument();
+  });
+
+  it("shows test text by default, supports hiding it and restores visibility with the section reset", async () => {
+    const user = userEvent.setup();
+    render(<ControlsHarness />);
+    await user.click(screen.getByRole("button", { name: "Test text" }));
+    expect(useTextStore.getState()).toMatchObject({ leftText: originalTestText, rightText: modifiedTestText });
+    expect(executeCompare).toHaveBeenCalledWith(useSettingsStore.getState().settings, true, false);
+    await user.click(screen.getByRole("button", { name: "Options" }));
+    await user.click(screen.getByLabelText("Show text test"));
+    expect(screen.queryByRole("button", { name: "Test text" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Restore Button visibility defaults" }));
+    expect(screen.getByRole("button", { name: "Test text" })).toBeVisible();
+  });
+
+  it("enables language selection and resets syntax only with Appearance", async () => {
+    const user = userEvent.setup();
+    render(<OptionsView />);
+    expect(screen.getByRole("button", { name: "Language: JavaScript" })).toBeDisabled();
+    await user.click(screen.getByLabelText("Syntax highlighting"));
+    await user.click(screen.getByRole("button", { name: "Language: JavaScript" }));
+    await user.click(screen.getByRole("option", { name: "Python", exact: true }));
+    expect(useSettingsStore.getState().settings).toMatchObject({ isSyntaxHighlightingEnabled: true, textSyntaxLanguage: "python" });
+    await user.click(screen.getByRole("button", { name: "Restore Comparison defaults" }));
+    expect(useSettingsStore.getState().settings.textSyntaxLanguage).toBe("python");
+    await user.click(screen.getByRole("button", { name: "Restore Appearance defaults" }));
+    expect(useSettingsStore.getState().settings).toMatchObject({ isSyntaxHighlightingEnabled: false, textSyntaxLanguage: "javascript", fontSize: defaultSettings.fontSize });
+    expect(executeCompare).not.toHaveBeenCalled();
+  });
+  it("toggles hidden unchanged lines, enables context only when active, and resets them with Layout", async () => {
+    const user = userEvent.setup();
+    render(<OptionsView />);
+    expect(screen.getByRole("button", { name: /Context lines:/ })).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: "Hide unchanged lines" }));
+    expect(useSettingsStore.getState().settings.isHideUnchangedEnabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: /Context lines:/ }));
+    await user.click(screen.getByRole("option", { name: "10 lines" }));
+    expect(useSettingsStore.getState().settings.unchangedContextLines).toBe(10);
+    await user.click(screen.getByRole("button", { name: "Restore Layout defaults" }));
+    expect(useSettingsStore.getState().settings).toMatchObject({ isHideUnchangedEnabled: false, unchangedContextLines: 3, fontSize: 20 });
+  });
+  it("toggles case sensitivity and the live input editor and resets them with Comparison", async () => {
+    const user = userEvent.setup();
+    render(<OptionsView />);
+    const caseSensitive = screen.getByRole("checkbox", { name: "Case sensitive" });
+    const liveEdit = screen.getByRole("checkbox", { name: "Live input editor" });
+    expect(caseSensitive).toBeChecked();
+    expect(liveEdit).not.toBeChecked();
+    await user.click(caseSensitive);
+    await user.click(liveEdit);
+    expect(useSettingsStore.getState().settings).toMatchObject({ ignoreCase: true, isRealtimeCompareEnabled: true });
+    expect(caseSensitive).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Restore Comparison defaults" }));
+    expect(useSettingsStore.getState().settings).toMatchObject({ ignoreCase: false, isRealtimeCompareEnabled: false });
+  });
+});

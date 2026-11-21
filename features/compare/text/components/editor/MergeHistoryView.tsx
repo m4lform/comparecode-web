@@ -11,7 +11,7 @@ import { cn } from "@/utils/uiHelpers";
 import { useLiveTimeTicker } from "@/features/compare/text/hooks/useLiveTimeTicker";
 
 type SnapshotTone = "initial" | "added" | "removed" | "neutral";
-type SnapshotKind = "initial" | "merge" | "swap";
+type SnapshotKind = "initial" | "merge" | "swap" | "edit";
 
 interface MergeSnapshotItem {
   id: string;
@@ -66,6 +66,8 @@ export function MergeHistoryView() {
 
       if (step.actionType === HistoryActionType.Swap) {
         kind = "swap";
+      } else if (step.actionType === HistoryActionType.Edit) {
+        kind = "edit";
       } else if (step.actionType === HistoryActionType.Merge) {
         if (step.direction === HistoryActionDirection.LeftToRight) {
           tone = "removed";
@@ -126,11 +128,15 @@ export function MergeHistoryView() {
       return <span className="text-xs font-semibold text-text-primary">Initial state</span>;
     }
 
+    if (snapshot.kind === "edit") {
+      return <span className="text-xs font-semibold text-text-primary">Manual edit</span>;
+    }
+
     if (snapshot.kind === "swap") {
       return (
         <span className="text-xs font-semibold text-text-primary">
           <span className="mr-1">Swap</span>
-          <span className="text-danger">({snapshot.originalLinesAffected})</span>
+          <span className="text-destructive">({snapshot.originalLinesAffected})</span>
           <span className="mx-0.5" />
           <span className="text-success">({snapshot.modifiedLinesAffected})</span>
         </span>
@@ -140,7 +146,7 @@ export function MergeHistoryView() {
     return (
       <span className="text-xs font-semibold text-text-primary">
         <span className="mr-1">Merge</span>
-        <span className="text-danger">({snapshot.originalLinesAffected})</span>
+        <span className="text-destructive">({snapshot.originalLinesAffected})</span>
         <span className="mx-0.5" />
         <span className="text-success">({snapshot.modifiedLinesAffected})</span>
       </span>
@@ -169,15 +175,15 @@ export function MergeHistoryView() {
             className={cn(
               "w-full rounded-md border px-2.5 py-2 text-left transition-all duration-(--duration-short) hover:brightness-95",
               getToneClass(snapshot.tone),
-              isActive && "ring-1 ring-accent-primary"
+              isActive && "ring-1 ring-accent"
             )}
             title="Restore this snapshot"
           >
             <div className="flex items-center justify-between gap-2">
               {renderSnapshotTitle(snapshot)}
-              <span className="text-[11px] font-semibold text-text-secondary">{getRelativeTime(snapshot.updatedAt, tickerNowMs)}</span>
+              <span className="text-[0.6875rem] font-semibold text-text-secondary">{getRelativeTime(snapshot.updatedAt, tickerNowMs)}</span>
             </div>
-            <p className="mt-0.5 text-[10px] text-text-secondary">
+            <p className="mt-0.5 text-[0.625rem] text-text-secondary">
               {formatAbsoluteDateTimeWithSettings(snapshot.updatedAt, settings.dateFormat, settings.timeFormat)}
             </p>
           </button>

@@ -1,24 +1,47 @@
 "use client";
 
-import { useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { VirtualItem } from "@tanstack/react-virtual";
 import { useEditorStore } from "@/features/compare/text/store/useTextStore";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { useDiffVirtualizer } from "@/features/compare/text/hooks/useDiffVirtualizer";
-import { SplitRow } from "./SplitRow";
+import { SplitRow, getSplitCellBackground } from "./SplitRow";
+import { DiffSurfaceLayer } from "./DiffSurfaceLayer";
+import { buildDiffSurfaces, getHoveredBlockSurface, getLineSurface, getSelectedBlockSurface } from "@/features/compare/text/utils/diffSurfaces";
 import { useCalculateSplitRows } from "@/features/compare/text/hooks/useCalculateSplitRows";
+import { useHiddenRanges } from "@/features/compare/text/hooks/useHiddenRanges";
+import { CollapsedRow } from "./CollapsedRow";
 import { UI_CONSTANTS } from "@/config/constants";
+import { ComparisonResult } from "@/features/compare/text/types/diff";
+import { useMoveFocus } from "@/features/compare/text/hooks/useMoveFocus";
+import type { SyntaxLine } from "@/services/syntax/tokenizeSyntax";
 
-export function SplitView() {
+export function SplitView({ syntax }: { syntax: { left: SyntaxLine[] | null; right: SyntaxLine[] | null } }) {
   const { comparisonResult, selectBlock, mergeBlock, leftText, rightText } = useEditorStore();
   const { settings } = useSettingsStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fakeScrollRef = useRef<HTMLDivElement>(null);
-  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
+  const [hoveredBlock, setHoveredBlock] = useState<{ result: ComparisonResult | null; id: string | null }>({ result: null, id: null });
+  const hoveredBlockId = hoveredBlock.result === comparisonResult ? hoveredBlock.id : null;
+  const setHoveredBlockId = (id: string | null) => setHoveredBlock({ result: comparisonResult, id });
   const [selectionSide, setSelectionSide] = useState<"left" | "right" | null>(null);
+  const selectedBlockId = comparisonResult?.blocks.find((block) => block.isSelected)?.id ?? null;
+  const { activeMoveId, activateMove } = useMoveFocus(comparisonResult);
 
-  const rows = useCalculateSplitRows(comparisonResult, settings);
+  useEffect(() => {
+    if (!selectionSide) return;
+    const clearSelectionSide = () => setSelectionSide(null);
+    window.addEventListener("pointerup", clearSelectionSide);
+    window.addEventListener("blur", clearSelectionSide);
+    return () => {
+      window.removeEventListener("pointerup", clearSelectionSide);
+      window.removeEventListener("blur", clearSelectionSide);
+    };
+  }, [selectionSide]);
+
+  const hiddenRanges = useHiddenRanges(comparisonResult, settings);
+  const rows = useCalculateSplitRows(comparisonResult, hiddenRanges);
 
   const maxLineChars = useMemo(() => {
     let max = 0;
@@ -39,8 +62,9 @@ export function SplitView() {
 
   const estimateSize = (index: number) => {
     const row = rows[index];
-    if (row.type === "header-controls") return row.block.isSelected ? UI_CONSTANTS.VIRTUAL_ROW_HEADER_HEIGHT : 0;
+    if (row.type === "header-controls") return (row.block.move ? 28 : 0) + (row.block.isSelected ? UI_CONSTANTS.VIRTUAL_ROW_HEADER_HEIGHT : 0);
     if (row.type === "controls") return row.block.isSelected ? UI_CONSTANTS.VIRTUAL_ROW_CONTROLS_HEIGHT : 0;
+    if (row.type === "collapsed") return UI_CONSTANTS.VIRTUAL_ROW_COLLAPSED_HEIGHT;
     return UI_CONSTANTS.VIRTUAL_ROW_DEFAULT_HEIGHT;
   };
 
@@ -57,10 +81,15 @@ export function SplitView() {
 
   const lineNumChars = Math.max(
     UI_CONSTANTS.LINE_NUM_MIN_CHARS,
-    Math.max(leftText?.split(/\r?\n/).length || 0, rightText?.split(/\r?\n/).length || 0).toString().length
+    Math.max(leftText?.split(/\r\n|\r|\n/).length || 0, rightText?.split(/\r\n|\r|\n/).length || 0).toString().length
   );
 
   const customStyles = { '--line-num-width': `${lineNumChars}ch` } as React.CSSProperties;
+  const virtualItems = virtualizer.getVirtualItems();
+  const lineSurfaces = (side: "old" | "new") => buildDiffSurfaces(virtualItems, (index) => {
+    const row = rows[index];
+    return row?.type === "line" ? getLineSurface(row, side, getSplitCellBackground(row, side)) : null;
+  });
 
   const handleScrollX = (e: React.UIEvent<HTMLDivElement>) => {
     if (scrollRef.current) {
@@ -86,15 +115,25 @@ export function SplitView() {
           className="relative w-full"
           style={{ height: `${virtualizer.getTotalSize()}px` }}
         >
-          {virtualizer.getVirtualItems().map((virtualRow: VirtualItem) => {
+          <DiffSurfaceLayer target="row" surfaces={buildDiffSurfaces(virtualItems, (index) => getSelectedBlockSurface(rows[index], false))} />
+          <DiffSurfaceLayer target="split-old" surfaces={lineSurfaces("old")} />
+          <DiffSurfaceLayer target="split-new" surfaces={lineSurfaces("new")} />
+          {virtualItems.map((virtualRow: VirtualItem) => {
             const row = rows[virtualRow.index];
+            if (row.type === "collapsed" && row.collapsed) {
+              return <CollapsedRow key={virtualRow.key} blockId={row.block.id} info={row.collapsed} virtualRow={virtualRow} measureRef={virtualizer.measureElement} />;
+            }
             return (
               <SplitRow
                 key={virtualRow.key}
                 row={row}
+                oldSyntaxLine={syntax.left?.[(row.block.oldLines[row.oldIndex]?.lineNumber ?? 0) - 1]}
+                newSyntaxLine={syntax.right?.[(row.block.newLines[row.newIndex]?.lineNumber ?? 0) - 1]}
                 virtualRow={virtualRow}
                 settings={settings}
-                hoveredBlockId={hoveredBlockId}
+                selectedBlockId={selectedBlockId}
+                activeMoveId={activeMoveId}
+                onActivateMove={activateMove}
                 setHoveredBlockId={setHoveredBlockId}
                 selectBlock={selectBlock}
                 mergeBlock={mergeBlock}
@@ -104,6 +143,7 @@ export function SplitView() {
               />
             );
           })}
+          <DiffSurfaceLayer target="row" className="z-10" surfaces={buildDiffSurfaces(virtualItems, (index) => getHoveredBlockSurface(rows[index], hoveredBlockId))} />
         </div>
       </div>
 

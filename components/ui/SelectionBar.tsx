@@ -1,5 +1,6 @@
 import React from "react";
 import { cn } from "@/utils/uiHelpers";
+import { controlSizes, type ControlSize } from "./controlStyles";
 
 export type SelectionMode = "single" | "multiple";
 
@@ -7,13 +8,16 @@ export interface SelectionBarOption<T extends string> {
   label: string;
   value: T;
   disabled?: boolean;
+  icon?: React.ReactNode;
 }
 
 interface SelectionBarBaseProps<T extends string> {
   options: Array<SelectionBarOption<T>>;
   className?: string;
   buttonClassName?: string;
+  contentLayout?: "inline" | "stacked";
   disabled?: boolean;
+  size?: ControlSize;
 }
 
 interface SelectionBarSingleProps<T extends string> extends SelectionBarBaseProps<T> {
@@ -34,6 +38,8 @@ export const SelectionBar = <T extends string>({
   options,
   className,
   buttonClassName,
+  contentLayout = "inline",
+  size = "sm",
   disabled = false,
   selectionMode = "single",
   value,
@@ -85,16 +91,20 @@ export const SelectionBar = <T extends string>({
             disabled={optionDisabled}
             onClick={() => handleSelect(option.value)}
             className={cn(
-              "relative flex-1 border-r border-border-default px-3 py-1.5 text-sm transition-colors outline-none last:border-r-0",
-              "focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-accent-primary/45",
+              "relative flex min-w-max flex-1 items-center justify-center border-r border-border-default transition-colors outline-none last:border-r-0",
+              controlSizes[size].field,
+              "focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-accent/45",
               selected
-                ? "bg-bg-selected text-accent-primary font-semibold"
+                ? "bg-bg-selected text-accent font-semibold"
                 : "bg-transparent text-text-secondary hover:bg-hover-overlay hover:text-text-primary",
               optionDisabled && "cursor-not-allowed opacity-50",
               buttonClassName
             )}
           >
-            {option.label}
+            <span className={cn("inline-flex items-center justify-center gap-1.5 whitespace-nowrap", contentLayout === "stacked" && "flex-col")}>
+              {option.icon && <span aria-hidden="true" className="inline-flex shrink-0 text-base">{option.icon}</span>}
+              {option.label}
+            </span>
           </button>
         );
       })}

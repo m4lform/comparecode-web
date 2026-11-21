@@ -1,14 +1,23 @@
 "use client";
 
 import { PointerEvent, WheelEvent, useEffect, useMemo, useRef, useState } from "react";
-import { MdClose, MdDelete, MdFlip, MdLock, MdLockOpen, MdRestartAlt, MdRotateRight } from "react-icons/md";
+import { MdDelete, MdFlip, MdLock, MdLockOpen, MdRotateRight } from "react-icons/md";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
 import { SelectionBar } from "@/components/ui/SelectionBar";
+import { Slider } from "@/components/ui/Slider";
+import { Switch } from "@/components/ui/Switch";
+import { Dialog } from "@/components/ui/Dialog";
+import { DialogHeader } from "@/components/ui/DialogHeader";
+import { FormField } from "@/components/ui/FormField";
+import { Input } from "@/components/ui/Input";
+import { OptionsSection } from "@/components/settings/OptionsSection";
+import { AutoAlignButton } from "./AutoAlignButton";
+import { AlignmentWorkspace } from "./AlignmentWorkspace";
 import { cn } from "@/utils/uiHelpers";
 import { useImageCompareStore } from "../../store/useImageCompareStore";
-import { estimateAutoAlignment } from "../../services/alignment/autoAlignService";
-import { ImageAffineTransform } from "../../services/alignment/types";
-import { clampNumber, createDefaultAlignmentTransform } from "../../services/alignment/transformUtils";
+import { DEFAULT_ALIGNMENT_OPTIONS, DEFAULT_ALIGNMENT_STATE, ImageAffineTransform, isAutoAlignmentAvailable } from "../../services/alignment/types";
+import { clampNumber, createDefaultAlignmentTransform, getTransformedBounds, normalizeTransform } from "../../services/alignment/transformUtils";
 
 type TransformOption = "rotate" | "scale";
 
@@ -21,6 +30,8 @@ interface StageSize {
   width: number;
   height: number;
   scale: number;
+  offsetX: number;
+  offsetY: number;
 }
 
 interface SnapGuide {
@@ -40,6 +51,31 @@ function formatPercent(value: number): string {
 
 function getOptionValues(options: { rotate: boolean; scale: boolean; warp: boolean }): Array<TransformOption> {
   return (["rotate", "scale"] as Array<TransformOption>).filter((option) => options[option]);
+}
+
+function roundToTwoDecimals(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function areNumbersEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) < 0.0001;
+}
+
+function areTransformsEqual(left: ImageAffineTransform | null, right: ImageAffineTransform | null): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+
+  const normalizedLeft = normalizeTransform(left);
+  const normalizedRight = normalizeTransform(right);
+
+  return areNumbersEqual(normalizedLeft.x, normalizedRight.x)
+    && areNumbersEqual(normalizedLeft.y, normalizedRight.y)
+    && areNumbersEqual(normalizedLeft.scaleX, normalizedRight.scaleX)
+    && areNumbersEqual(normalizedLeft.scaleY, normalizedRight.scaleY)
+    && areNumbersEqual(normalizedLeft.rotationDeg, normalizedRight.rotationDeg)
+    && normalizedLeft.flipX === normalizedRight.flipX
+    && normalizedLeft.flipY === normalizedRight.flipY;
 }
 
 function getSnapResult(
@@ -111,16 +147,17 @@ export function ImageAlignmentPanel() {
   const applyAlignmentTransform = useImageCompareStore((s) => s.applyAlignmentTransform);
   const updateAlignmentOptions = useImageCompareStore((s) => s.updateAlignmentOptions);
   const setAlignmentPreviewZoom = useImageCompareStore((s) => s.setAlignmentPreviewZoom);
+  const setAlignmentOpacity = useImageCompareStore((s) => s.setAlignmentOpacity);
   const setAlignmentSnappingEnabled = useImageCompareStore((s) => s.setAlignmentSnappingEnabled);
   const setAlignmentAspectRatioLocked = useImageCompareStore((s) => s.setAlignmentAspectRatioLocked);
-  const setAlignmentStatus = useImageCompareStore((s) => s.setAlignmentStatus);
-  const setAlignmentError = useImageCompareStore((s) => s.setAlignmentError);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
-  const [stageSize, setStageSize] = useState<StageSize>({ width: 1, height: 1, scale: 1 });
+  const errorRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState<StageSize>({ width: 1, height: 1, scale: 1, offsetX: 0, offsetY: 0 });
   const [viewportPan, setViewportPan] = useState({ x: 0, y: 0 });
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [activeGuides, setActiveGuides] = useState<SnapGuide[]>([]);
+  const [sizeUnit, setSizeUnit] = useState<"%" | "px">("%");
   const dragRef = useRef<DragState | null>(null);
 
   const draftTransform = useMemo(() => {
@@ -129,16 +166,27 @@ export function ImageAlignmentPanel() {
   }, [alignment.appliedTransform, alignment.draftTransform, modifiedImage, originalImage]);
 
   useEffect(() => {
-    if (!alignment.isPanelOpen || !originalImage || !stageRef.current) return;
+    if (alignment.isPanelOpen && alignment.error) errorRef.current?.scrollIntoView({ block: "nearest" });
+  }, [alignment.error, alignment.isPanelOpen]);
+
+  useEffect(() => {
+    if (!alignment.isPanelOpen || !originalImage || !modifiedImage || !stageRef.current) return;
 
     const resize = () => {
       const rect = stageRef.current?.getBoundingClientRect();
       if (!rect) return;
-      const scale = Math.min(rect.width / originalImage.width, rect.height / originalImage.height) * alignment.previewZoom;
+      const bounds = getTransformedBounds(alignment.appliedTransform ?? createDefaultAlignmentTransform(originalImage, modifiedImage), modifiedImage.width, modifiedImage.height);
+      const minX = Math.min(0, bounds.x), minY = Math.min(0, bounds.y);
+      const maxX = Math.max(originalImage.width, bounds.x + bounds.width);
+      const maxY = Math.max(originalImage.height, bounds.y + bounds.height);
+      const padding = parseFloat(getComputedStyle(stageRef.current!).paddingLeft) * 2;
+      const scale = Math.min(Math.max(1, rect.width - padding) / (maxX - minX), Math.max(1, rect.height - padding) / (maxY - minY)) * alignment.previewZoom;
       setStageSize({
         width: originalImage.width * scale,
         height: originalImage.height * scale,
-        scale
+        scale,
+        offsetX: (originalImage.width - maxX - minX) * scale / 2,
+        offsetY: (originalImage.height - maxY - minY) * scale / 2
       });
     };
 
@@ -147,21 +195,19 @@ export function ImageAlignmentPanel() {
     resize();
 
     return () => observer.disconnect();
-  }, [alignment.isPanelOpen, alignment.previewZoom, originalImage]);
+  }, [alignment.appliedTransform, alignment.isPanelOpen, alignment.previewZoom, modifiedImage, originalImage]);
 
   useEffect(() => {
     if (!alignment.isPanelOpen) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        closeAlignmentPanel();
-        return;
-      }
+      if (event.defaultPrevented) return;
+      if (event.target instanceof Element && event.target.closest("dialog") !== stageRef.current?.closest("dialog")) return;
       if (event.code === "Space" && event.target instanceof HTMLElement && !["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(event.target.tagName)) {
         event.preventDefault();
         setIsSpacePressed(true);
       }
-      if (!draftTransform) return;
+      if (!draftTransform || (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [role=menu], [role=listbox]"))) return;
       const amount = event.shiftKey ? 10 : 1;
       if (event.key === "ArrowLeft") setAlignmentDraftTransform({ ...draftTransform, x: draftTransform.x - amount });
       if (event.key === "ArrowRight") setAlignmentDraftTransform({ ...draftTransform, x: draftTransform.x + amount });
@@ -336,32 +382,22 @@ export function ImageAlignmentPanel() {
     });
   };
 
-  const runAutoAlign = async () => {
-    if (!originalImage || !modifiedImage) return;
-    setAlignmentStatus("aligning");
-    const result = await estimateAutoAlignment(originalImage, modifiedImage, alignment.options);
-    if (result.success && result.transform) {
-      setAlignmentDraftTransform(result.transform);
-      applyAlignmentTransform(result.transform, {
-        method: "auto",
-        confidence: result.confidence ?? null,
-        matchCount: result.matchCount ?? null,
-        timestamp: Date.now()
-      });
-      return;
-    }
-    setAlignmentError(
-      result.error?.code ?? "alignment/failed",
-      result.error?.message ?? "Auto align failed. Use manual alignment to place the images precisely."
-    );
-  };
-
   if (!alignment.isPanelOpen || !originalImage || !modifiedImage || !draftTransform) {
     return null;
   }
 
   const displayWidth = modifiedImage.width * draftTransform.scaleX;
   const displayHeight = modifiedImage.height * draftTransform.scaleY;
+  const widthPercent = roundToTwoDecimals(draftTransform.scaleX * 100);
+  const heightPercent = roundToTwoDecimals(draftTransform.scaleY * 100);
+  const defaultTransform = createDefaultAlignmentTransform(originalImage, modifiedImage);
+  const isPreviewDirty = !areNumbersEqual(alignment.previewZoom, DEFAULT_ALIGNMENT_STATE.previewZoom)
+    || !areNumbersEqual(alignment.opacity, DEFAULT_ALIGNMENT_STATE.opacity)
+    || viewportPan.x !== 0 || viewportPan.y !== 0;
+  const isManualAlignDirty =
+    !areTransformsEqual(draftTransform, defaultTransform)
+    || alignment.snappingEnabled !== DEFAULT_ALIGNMENT_STATE.snappingEnabled
+    || alignment.aspectRatioLocked !== DEFAULT_ALIGNMENT_STATE.aspectRatioLocked;
   const handleScaleX = 1 / Math.max(0.001, draftTransform.scaleX);
   const handleScaleY = 1 / Math.max(0.001, draftTransform.scaleY);
   const rotateHandleOffset = -34 * handleScaleY;
@@ -379,263 +415,271 @@ export function ImageAlignmentPanel() {
   };
   const selectedOptions = getOptionValues(alignment.options);
 
-  return (
-    <div className="fixed inset-0 z-50 flex bg-black/55 p-3 sm:p-5">
-      <div className="flex min-h-0 w-full overflow-hidden rounded-lg border border-border-default bg-bg-primary shadow-xl">
-        <div
-          ref={stageRef}
-          className={cn("relative min-w-0 flex-1 overflow-hidden bg-bg-secondary cursor-grab active:cursor-grabbing", isSpacePressed && "cursor-grabbing")}
-          onWheel={handleWheel}
-          onPointerDown={startPan}
+  const preview = (
+    <OptionsSection title="Preview" isDirty={isPreviewDirty} onReset={() => {
+      setAlignmentPreviewZoom(DEFAULT_ALIGNMENT_STATE.previewZoom);
+      setAlignmentOpacity(DEFAULT_ALIGNMENT_STATE.opacity);
+      setViewportPan({ x: 0, y: 0 });
+    }}>
+      <Slider label="Zoom" aria-label="Preview zoom" min={50} max={500} step="5"
+        value={Math.round(alignment.previewZoom * 100)} displayValue={formatPercent(alignment.previewZoom)}
+        onChange={event => setAlignmentPreviewZoom(Number(event.target.value) / 100)} />
+      <Slider label="Overlay opacity" aria-label="Overlay opacity" min={0} max={100}
+        value={Math.round(alignment.opacity * 100)} displayValue={formatPercent(alignment.opacity)}
+        onChange={event => setAlignmentOpacity(Number(event.target.value) / 100)} />
+    </OptionsSection>
+  );
+
+  const automatic = (
+    <OptionsSection title="Auto align"
+      isDirty={alignment.options.rotate !== DEFAULT_ALIGNMENT_OPTIONS.rotate || alignment.options.scale !== DEFAULT_ALIGNMENT_OPTIONS.scale || alignment.options.warp !== DEFAULT_ALIGNMENT_OPTIONS.warp}
+      onReset={() => updateAlignmentOptions(DEFAULT_ALIGNMENT_OPTIONS)}>
+      <p className="text-xs text-text-secondary">Allowed transformations</p>
+      <SelectionBar<TransformOption>
+        selectionMode="multiple"
+        value={selectedOptions}
+        options={TRANSFORM_OPTIONS}
+        onChange={values => updateAlignmentOptions({ rotate: values.includes("rotate"), scale: values.includes("scale"), warp: false })}
+        buttonClassName="px-2"
+      />
+      <AutoAlignButton className="w-full" />
+      {!isAutoAlignmentAvailable(alignment.options) && (
+        <p className="text-xs text-text-secondary">Enable Rotate or Scale to use auto align.</p>
+      )}
+    </OptionsSection>
+  );
+
+  const manual = (
+    <OptionsSection title="Manual adjustments" isDirty={isManualAlignDirty} onReset={resetAlignmentDraft}>
+      <Slider
+        min={-180}
+        max={180}
+        step="0.1"
+        value={draftTransform.rotationDeg}
+        onChange={(event) => setAlignmentDraftTransform({ ...draftTransform, rotationDeg: Number(event.target.value) })}
+        label="Rotation"
+        aria-label="Rotation"
+        displayValue={`${Number(draftTransform.rotationDeg.toFixed(1))}°`}
+        containerClassName="mt-3"
+      />
+
+      <div className="mt-3 border-t border-border-default pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-sm font-medium text-text-primary">Size</h4>
+          <div className="flex items-center gap-2">
+            <SelectionBar<"%" | "px">
+              value={sizeUnit}
+              options={[{ value: "%", label: "%" }, { value: "px", label: "px" }]}
+              onChange={setSizeUnit}
+              buttonClassName="px-2"
+            />
+            <IconButton
+              onClick={() => setAlignmentAspectRatioLocked(!alignment.aspectRatioLocked)}
+              size="sm"
+              isActive={alignment.aspectRatioLocked}
+              aria-pressed={alignment.aspectRatioLocked}
+              title={alignment.aspectRatioLocked ? "Unlock proportional scale" : "Lock proportional scale"}
+            >
+              {alignment.aspectRatioLocked ? <MdLock /> : <MdLockOpen />}
+            </IconButton>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <NumberField
+            key={`width-${sizeUnit}`}
+            label="Width"
+            value={sizeUnit === "px" ? displayWidth : widthPercent}
+            step={sizeUnit === "px" ? 1 : 0.5}
+            suffix={sizeUnit}
+            onChange={(value) => {
+              const scale = value / (sizeUnit === "px" ? modifiedImage.width : 100);
+              updateScale(scale, alignment.aspectRatioLocked ? scale : draftTransform.scaleY);
+            }}
+          />
+          <NumberField
+            key={`height-${sizeUnit}`}
+            label="Height"
+            value={sizeUnit === "px" ? displayHeight : heightPercent}
+            step={sizeUnit === "px" ? 1 : 0.5}
+            suffix={sizeUnit}
+            onChange={(value) => {
+              const scale = value / (sizeUnit === "px" ? modifiedImage.height : 100);
+              updateScale(alignment.aspectRatioLocked ? scale : draftTransform.scaleX, scale);
+            }}
+          />
+        </div>
+        <div className="mt-3 grid gap-3">
+          <Slider
+            min={1}
+            max={Math.max(300, widthPercent)}
+            step="0.01"
+            value={widthPercent}
+            onChange={(event) => updateScale(Number(event.target.value) / 100, alignment.aspectRatioLocked ? Number(event.target.value) / 100 : draftTransform.scaleY)}
+            label={alignment.aspectRatioLocked ? "Scale" : "Width scale"}
+            aria-label={alignment.aspectRatioLocked ? "Scale" : "Width scale"}
+            displayValue={`${widthPercent}%`}
+          />
+          {!alignment.aspectRatioLocked && (
+            <Slider
+              min={1}
+              max={Math.max(300, heightPercent)}
+              step="0.01"
+              value={heightPercent}
+              onChange={(event) => updateScale(draftTransform.scaleX, Number(event.target.value) / 100)}
+              label="Height scale"
+              aria-label="Height scale"
+              displayValue={`${heightPercent}%`}
+            />
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2 border-t border-border-default pt-3">
+        <Button
+          variant="outline"
+          size="sm"
+          aria-pressed={draftTransform.flipX}
+          onClick={() => setAlignmentDraftTransform({ ...draftTransform, flipX: !draftTransform.flipX })}
+          leftIcon={<MdFlip />}
+        >
+          Flip horizontal
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-pressed={draftTransform.flipY}
+          onClick={() => setAlignmentDraftTransform({ ...draftTransform, flipY: !draftTransform.flipY })}
+          leftIcon={<MdFlip className="rotate-90" />}
+        >
+          Flip vertical
+        </Button>
+      </div>
+      <Switch
+        checked={alignment.snappingEnabled}
+        onChange={(event) => setAlignmentSnappingEnabled(event.target.checked)}
+        label="Snapping"
+        title="Hold Ctrl or Command while dragging to temporarily toggle"
+        containerClassName="mt-3"
+      />
+    </OptionsSection>
+  );
+
+  const stage = (
+    <div
+      ref={stageRef}
+      className={cn("relative min-h-0 min-w-0 flex-1 overflow-hidden bg-bg-secondary p-10 cursor-grab active:cursor-grabbing", isSpacePressed && "cursor-grabbing")}
+      onWheel={handleWheel}
+      onPointerDown={startPan}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div
+        className="absolute left-1/2 top-1/2 select-none"
+        style={{
+          width: stageSize.width,
+          height: stageSize.height,
+          transform: `translate(-50%, -50%) translate(${viewportPan.x + stageSize.offsetX}px, ${viewportPan.y + stageSize.offsetY}px)`
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={originalImage.url}
+          alt="Original"
+          className="absolute inset-0 h-full w-full object-fill"
+          draggable={false}
+        />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={modifiedImage.url}
+          alt="Modified"
+          className="absolute max-w-none cursor-move object-fill"
+          draggable={false}
+          style={transformStyle}
+          onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
+        />
+        <div
+          ref={overlayRef}
+          className="pointer-events-none absolute border border-accent shadow-[0_0_0_1px_rgba(255,255,255,0.55)]"
+          style={{ ...transformStyle, opacity: 1 }}
         >
-          <div
-            className="absolute left-1/2 top-1/2 select-none"
-            style={{
-              width: stageSize.width,
-              height: stageSize.height,
-              transform: `translate(-50%, -50%) translate(${viewportPan.x}px, ${viewportPan.y}px)`
-            }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={originalImage.url}
-              alt="Original"
-              className="absolute inset-0 h-full w-full object-fill"
-              draggable={false}
-            />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={modifiedImage.url}
-              alt="Modified"
-              className="absolute cursor-move object-fill"
-              draggable={false}
-              style={transformStyle}
-              onPointerDown={handlePointerDown}
+          {[
+            { className: "left-0 top-0 cursor-nwse-resize", transform: "translate(-50%, -50%)" },
+            { className: "right-0 top-0 cursor-nesw-resize", transform: "translate(50%, -50%)" },
+            { className: "right-0 bottom-0 cursor-nwse-resize", transform: "translate(50%, 50%)" },
+            { className: "left-0 bottom-0 cursor-nesw-resize", transform: "translate(-50%, 50%)" }
+          ].map((handle) => (
+            <button
+              key={handle.className}
+              type="button"
+              className={cn("pointer-events-auto absolute h-3 w-3 border border-accent bg-bg-primary shadow-sm", handle.className)}
+              style={{ transform: `${handle.transform} scale(${handleScaleX}, ${handleScaleY})` }}
+              onPointerDown={handleResizePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
             />
-            <div
-              ref={overlayRef}
-              className="pointer-events-none absolute border border-accent-primary shadow-[0_0_0_1px_rgba(255,255,255,0.55)]"
-              style={{ ...transformStyle, opacity: 1 }}
-            >
-              {[
-                { className: "left-0 top-0 cursor-nwse-resize", transform: "translate(-50%, -50%)" },
-                { className: "right-0 top-0 cursor-nesw-resize", transform: "translate(50%, -50%)" },
-                { className: "right-0 bottom-0 cursor-nwse-resize", transform: "translate(50%, 50%)" },
-                { className: "left-0 bottom-0 cursor-nesw-resize", transform: "translate(-50%, 50%)" }
-              ].map((handle) => (
-                <button
-                  key={handle.className}
-                  type="button"
-                  className={cn("pointer-events-auto absolute h-3 w-3 border border-accent-primary bg-bg-primary shadow-sm", handle.className)}
-                  style={{ transform: `${handle.transform} scale(${handleScaleX}, ${handleScaleY})` }}
-                  onPointerDown={handleResizePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                />
-              ))}
-              <button
-                type="button"
-                className="pointer-events-auto absolute left-1/2 top-0 flex h-7 w-7 cursor-grab items-center justify-center rounded-full text-accent-primary hover:bg-hover-overlay active:cursor-grabbing"
-                style={{
-                  top: `${rotateHandleOffset}px`,
-                  transform: `translateX(-50%) scale(${handleScaleX}, ${handleScaleY})`
-                }}
-                onPointerDown={handleRotatePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                onPointerCancel={handlePointerUp}
-              >
-                <MdRotateRight className="text-xl" />
-              </button>
-            </div>
-            {alignment.snappingEnabled && (
-              <>
-                <span className="pointer-events-none absolute top-0 bottom-0 w-px bg-accent-primary/30" style={{ left: stageSize.width / 2 }} />
-                <span className="pointer-events-none absolute left-0 right-0 h-px bg-accent-primary/30" style={{ top: stageSize.height / 2 }} />
-                {activeGuides.map((guide, index) => (
-                  <span
-                    key={`${guide.axis}-${guide.position}-${index}`}
-                    className={cn(
-                      "pointer-events-none absolute bg-accent-primary shadow-[0_0_0_1px_rgba(255,255,255,0.75),0_0_10px_rgba(59,130,246,0.45)]",
-                      guide.axis === "x" ? "top-0 bottom-0 w-0.5" : "left-0 right-0 h-0.5"
-                    )}
-                    style={guide.axis === "x" ? { left: guide.position * stageSize.scale } : { top: guide.position * stageSize.scale }}
-                  />
-                ))}
-              </>
-            )}
-          </div>
+          ))}
+          <button
+            type="button"
+            className="pointer-events-auto absolute left-1/2 top-0 flex h-7 w-7 cursor-grab items-center justify-center rounded-full text-accent hover:bg-hover-overlay active:cursor-grabbing"
+            style={{
+              top: `${rotateHandleOffset}px`,
+              transform: `translateX(-50%) scale(${handleScaleX}, ${handleScaleY})`
+            }}
+            onPointerDown={handleRotatePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+          >
+            <MdRotateRight className="text-xl" />
+          </button>
         </div>
-
-        <aside className="flex w-full max-w-sm flex-col border-l border-border-default bg-bg-primary max-lg:max-w-xs max-md:absolute max-md:inset-y-3 max-md:right-3 max-md:left-3 max-md:max-w-none max-md:rounded-lg max-md:border">
-          <div className="flex items-center gap-2 border-b border-border-default px-4 py-3">
-            <h2 className="text-base font-bold text-text-primary">Align Images</h2>
-            <button type="button" onClick={closeAlignmentPanel} className="ml-auto rounded p-1.5 text-text-secondary hover:bg-hover-overlay hover:text-text-primary">
-              <MdClose className="text-xl" />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-            {alignment.error && (
-              <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-                {alignment.error.message}
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-2">
-              <Button variant="outline" size="sm" onClick={resetAlignmentDraft} leftIcon={<MdRestartAlt className="text-lg" />}>
-                Reset
-              </Button>
-              <Button variant="danger" size="sm" onClick={resetAlignment} leftIcon={<MdDelete className="text-lg" />}>
-                Clear alignment
-              </Button>
-            </div>
-
-            <div className="mt-5 flex items-center justify-between gap-3 rounded-md border border-border-default bg-bg-secondary px-3 py-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Zoom</span>
-              <span className="text-sm font-bold text-text-primary">{formatPercent(alignment.previewZoom)}</span>
-              <Button variant="outline" size="sm" onClick={() => setAlignmentPreviewZoom(1)} leftIcon={<MdRestartAlt className="text-lg" />}>
-                Reset
-              </Button>
-            </div>
-
-            <section className="mt-6 border-t border-border-default pt-5">
-              <h3 className="text-sm font-bold text-text-primary">Auto Align</h3>
-              <p className="mt-1 text-xs text-text-secondary">Allowed transformations</p>
-              <SelectionBar<TransformOption>
-                selectionMode="multiple"
-                value={selectedOptions}
-                options={TRANSFORM_OPTIONS}
-                onChange={(values) => updateAlignmentOptions({
-                  rotate: values.includes("rotate"),
-                  scale: values.includes("scale"),
-                  warp: false
-                })}
-                className="mt-3"
-                buttonClassName="px-2"
+        {alignment.snappingEnabled && (
+          <>
+            <span className="pointer-events-none absolute top-0 bottom-0 w-px bg-accent/30" style={{ left: stageSize.width / 2 }} />
+            <span className="pointer-events-none absolute left-0 right-0 h-px bg-accent/30" style={{ top: stageSize.height / 2 }} />
+            {activeGuides.map((guide, index) => (
+              <span
+                key={`${guide.axis}-${guide.position}-${index}`}
+                className={cn(
+                  "pointer-events-none absolute bg-accent shadow-[0_0_0_1px_rgba(255,255,255,0.75),0_0_10px_rgba(59,130,246,0.45)]",
+                  guide.axis === "x" ? "top-0 bottom-0 w-0.5" : "left-0 right-0 h-0.5"
+                )}
+                style={guide.axis === "x" ? { left: guide.position * stageSize.scale } : { top: guide.position * stageSize.scale }}
               />
-              <Button className="mt-3 w-full" onClick={runAutoAlign} disabled={alignment.status === "aligning"}>
-                {alignment.status === "aligning" ? "Aligning..." : "Auto Align Images"}
-              </Button>
-            </section>
-
-            <section className="mt-6 border-t border-border-default pt-5">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-bold text-text-primary">Align Manually</h3>
-                <Button
-                  variant={alignment.snappingEnabled ? "primary" : "outline"}
-                  size="sm"
-                  onClick={() => setAlignmentSnappingEnabled(!alignment.snappingEnabled)}
-                  title="Hold Ctrl or Command while dragging to temporarily toggle"
-                >
-                  Snap: {alignment.snappingEnabled ? "on" : "off"}
-                </Button>
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setAlignmentDraftTransform({ ...draftTransform, flipY: !draftTransform.flipY })}
-                  leftIcon={<MdFlip className="rotate-90 text-lg" />}
-                >
-                  Vertical
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setAlignmentDraftTransform({ ...draftTransform, flipX: !draftTransform.flipX })}
-                  leftIcon={<MdFlip className="text-lg" />}
-                >
-                  Horizontal
-                </Button>
-              </div>
-
-              <div className="mt-4">
-                <NumberField
-                  label="Rotate"
-                  value={draftTransform.rotationDeg}
-                  step={0.1}
-                  suffix="deg"
-                  onChange={(value) => setAlignmentDraftTransform({ ...draftTransform, rotationDeg: value })}
-                />
-              </div>
-
-              <div className="mt-5 rounded-md border border-border-default bg-bg-secondary p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <h4 className="text-xs font-bold uppercase tracking-wide text-text-secondary">Transformation</h4>
-                  <button
-                    type="button"
-                    onClick={() => setAlignmentAspectRatioLocked(!alignment.aspectRatioLocked)}
-                    className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-md border border-border-default bg-bg-primary text-text-secondary hover:bg-hover-overlay hover:text-text-primary",
-                      alignment.aspectRatioLocked && "text-accent-primary"
-                    )}
-                    title={alignment.aspectRatioLocked ? "Unlock proportional scale" : "Lock proportional scale"}
-                  >
-                    {alignment.aspectRatioLocked ? <MdLock className="text-lg" /> : <MdLockOpen className="text-lg" />}
-                  </button>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <NumberField
-                    label="Width"
-                    value={displayWidth}
-                    step={1}
-                    suffix="px"
-                    onChange={(value) => updateScale(value / modifiedImage.width, alignment.aspectRatioLocked ? value / modifiedImage.width : draftTransform.scaleY)}
-                  />
-                  <NumberField
-                    label="Width"
-                    value={draftTransform.scaleX * 100}
-                    step={0.5}
-                    suffix="%"
-                    onChange={(value) => updateScale(value / 100, alignment.aspectRatioLocked ? value / 100 : draftTransform.scaleY)}
-                  />
-                  <NumberField
-                    label="Height"
-                    value={displayHeight}
-                    step={1}
-                    suffix="px"
-                    onChange={(value) => updateScale(alignment.aspectRatioLocked ? value / modifiedImage.height : draftTransform.scaleX, value / modifiedImage.height)}
-                  />
-                  <NumberField
-                    label="Height"
-                    value={draftTransform.scaleY * 100}
-                    step={0.5}
-                    suffix="%"
-                    onChange={(value) => updateScale(alignment.aspectRatioLocked ? value / 100 : draftTransform.scaleX, value / 100)}
-                  />
-                </div>
-              </div>
-            </section>
-          </div>
-
-          <div className="flex justify-end gap-2 border-t border-border-default p-4">
-            <Button variant="ghost" onClick={closeAlignmentPanel}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => applyAlignmentTransform(draftTransform, {
-                method: "manual",
-                confidence: null,
-                matchCount: null,
-                timestamp: Date.now()
-              })}
-            >
-              Apply
-            </Button>
-          </div>
-        </aside>
+            ))}
+          </>
+        )}
       </div>
     </div>
+  );
+
+  return (
+    <Dialog open={alignment.isPanelOpen} onOpenChange={open => { if (!open) closeAlignmentPanel(); }} aria-labelledby="alignment-panel-title" className="h-[calc(100dvh-1.5rem)] max-h-none w-[calc(100%-1.5rem)] overflow-hidden sm:h-[calc(100dvh-2.5rem)] sm:w-[calc(100%-2.5rem)]">
+      <div className="flex h-full min-h-0 flex-col">
+        <DialogHeader title="Adjust alignment" titleId="alignment-panel-title" closeLabel="Close alignment panel" onClose={closeAlignmentPanel} className="shrink-0 py-3" />
+        {alignment.error && (
+          <div ref={errorRef} role="alert" className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            {alignment.error.message}
+          </div>
+        )}
+        <AlignmentWorkspace stage={stage} preview={preview} automatic={automatic} manual={manual} />
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border-default p-3">
+          <Button variant="danger" onClick={resetAlignment} leftIcon={<MdDelete className="text-lg" />}>Reset alignment</Button>
+          <div className="ml-auto flex justify-end gap-2">
+            <Button variant="ghost" onClick={closeAlignmentPanel}>Cancel</Button>
+            <Button onClick={() => applyAlignmentTransform(draftTransform, {
+              method: "manual", confidence: null, matchCount: null, timestamp: Date.now()
+            })}>Apply</Button>
+          </div>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -654,9 +698,15 @@ function formatNumberFieldValue(value: number): string {
 
 function NumberField({ label, value, step, suffix, onChange }: NumberFieldProps) {
   const [draftValue, setDraftValue] = useState<string | null>(null);
+  const cancelCommit = useRef(false);
   const inputValue = draftValue ?? formatNumberFieldValue(value);
 
   const commitValue = () => {
+    if (cancelCommit.current) {
+      cancelCommit.current = false;
+      setDraftValue(null);
+      return;
+    }
     const normalizedValue = Number(inputValue.replace(",", "."));
     if (!Number.isFinite(normalizedValue)) {
       setDraftValue(null);
@@ -668,10 +718,11 @@ function NumberField({ label, value, step, suffix, onChange }: NumberFieldProps)
   };
 
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-xs font-semibold text-text-secondary">{label}</span>
+    <FormField label={label}>{field => (
       <span className="flex items-center overflow-hidden rounded-md border border-border-default bg-bg-secondary">
-        <input
+        <Input
+          {...field}
+          size="sm"
           type="text"
           inputMode="decimal"
           value={inputValue}
@@ -684,14 +735,17 @@ function NumberField({ label, value, step, suffix, onChange }: NumberFieldProps)
               event.currentTarget.blur();
             }
             if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              cancelCommit.current = true;
               setDraftValue(null);
               event.currentTarget.blur();
             }
           }}
-          className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm text-text-primary outline-none"
+          className="flex-1 rounded-none border-0 bg-transparent px-2 focus-visible:ring-inset"
         />
         <span className="border-l border-border-default px-2 text-xs font-semibold text-text-secondary">{suffix}</span>
       </span>
-    </label>
+    )}</FormField>
   );
 }

@@ -1,12 +1,15 @@
 import { create } from "zustand";
 import {
   DEFAULT_ALIGNMENT_STATE,
+  isAutoAlignmentAvailable,
   ImageAffineTransform,
   ImageAlignmentMetadata,
   ImageAlignmentOptions,
   ImageAlignmentState
 } from "../services/alignment/types";
 import { createDefaultAlignmentTransform, normalizeTransform } from "../services/alignment/transformUtils";
+import { estimateAutoAlignment } from "../services/alignment/autoAlignService";
+import { DEFAULT_VIEWPORT, type ImageViewportState } from "../utils/viewport";
 
 export type ImageCompareMode = "side-by-side" | "fade" | "slider" | "diff";
 export type DiffAlgorithm =
@@ -31,6 +34,7 @@ interface ImageCompareState {
   diffAlgorithm: DiffAlgorithm;
   fadeValue: number;
   sliderPosition: number;
+  viewport: ImageViewportState;
   isMetadataPanelOpen: boolean;
   alignment: ImageAlignmentState;
 
@@ -40,14 +44,16 @@ interface ImageCompareState {
   setDiffAlgorithm: (algo: DiffAlgorithm) => void;
   setFadeValue: (value: number) => void;
   setSliderPosition: (pos: number) => void;
+  setViewport: (viewport: ImageViewportState) => void;
+  resetViewport: () => void;
   setIsMetadataPanelOpen: (open: boolean) => void;
   toggleMetadataPanel: () => void;
   openAlignmentPrompt: (pairKey: string) => void;
   skipAlignmentPrompt: (pairKey: string) => void;
   openAlignmentPanel: () => void;
   closeAlignmentPanel: () => void;
-  setAlignmentStatus: (status: ImageAlignmentState["status"]) => void;
   setAlignmentError: (code: string, message: string) => void;
+  runAutoAlignment: () => Promise<void>;
   updateAlignmentOptions: (options: Partial<ImageAlignmentOptions>) => void;
   setAlignmentOpacity: (value: number) => void;
   setAlignmentPreviewZoom: (value: number) => void;
@@ -85,6 +91,7 @@ function cloneDefaultAlignmentState(): ImageAlignmentState {
 }
 
 function resetAlignmentForImages(state: ImageCompareState): Partial<ImageCompareState> {
+  cancelAutoAlignment();
   return {
     alignment: {
       ...cloneDefaultAlignmentState(),
@@ -93,13 +100,21 @@ function resetAlignmentForImages(state: ImageCompareState): Partial<ImageCompare
   };
 }
 
-export const useImageCompareStore = create<ImageCompareState>((set) => ({
+let pendingAlignment: AbortController | null = null;
+
+function cancelAutoAlignment(): void {
+  pendingAlignment?.abort();
+  pendingAlignment = null;
+}
+
+export const useImageCompareStore = create<ImageCompareState>((set, get) => ({
   originalImage: null,
   modifiedImage: null,
   compareMode: "side-by-side",
   diffAlgorithm: "highlight",
   fadeValue: 500,
   sliderPosition: 0.5,
+  viewport: { ...DEFAULT_VIEWPORT },
   isMetadataPanelOpen: false,
   alignment: cloneDefaultAlignmentState(),
 
@@ -116,6 +131,7 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
       || state.originalImage?.name !== img?.name;
     return {
       originalImage: img,
+      ...(previousUrl !== nextUrl ? { viewport: { ...DEFAULT_VIEWPORT } } : {}),
       ...(shouldResetAlignment ? resetAlignmentForImages(state) : {})
     };
   }),
@@ -132,6 +148,7 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
       || state.modifiedImage?.name !== img?.name;
     return {
       modifiedImage: img,
+      ...(previousUrl !== nextUrl ? { viewport: { ...DEFAULT_VIEWPORT } } : {}),
       ...(shouldResetAlignment ? resetAlignmentForImages(state) : {})
     };
   }),
@@ -139,6 +156,8 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
   setDiffAlgorithm: (algo) => set({ diffAlgorithm: algo }),
   setFadeValue: (value) => set({ fadeValue: clamp(value, 0, 1000) }),
   setSliderPosition: (pos) => set({ sliderPosition: clamp(pos, 0, 1) }),
+  setViewport: (viewport) => set({ viewport }),
+  resetViewport: () => set({ viewport: { ...DEFAULT_VIEWPORT } }),
   setIsMetadataPanelOpen: (open) => set({ isMetadataPanelOpen: open }),
   toggleMetadataPanel: () => set((state) => ({ isMetadataPanelOpen: !state.isMetadataPanelOpen })),
   openAlignmentPrompt: (pairKey) => set((state) => ({
@@ -151,7 +170,6 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
     }
   })),
   skipAlignmentPrompt: (pairKey) => set((state) => ({
-    compareMode: "slider",
     alignment: {
       ...state.alignment,
       status: "idle",
@@ -176,28 +194,50 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
       }
     };
   }),
-  closeAlignmentPanel: () => set((state) => ({
-    alignment: {
-      ...state.alignment,
-      isPanelOpen: false
-    }
-  })),
-  setAlignmentStatus: (status) => set((state) => ({
-    alignment: {
-      ...state.alignment,
-      status
-    }
-  })),
+  closeAlignmentPanel: () => {
+    cancelAutoAlignment();
+    set((state) => ({
+      alignment: {
+        ...state.alignment,
+        status: state.alignment.appliedTransform ? "aligned" : "idle",
+        isPanelOpen: false
+      }
+    }));
+  },
   setAlignmentError: (code, message) => set((state) => ({
     alignment: {
       ...state.alignment,
       status: "failed",
       error: { code, message },
       isPanelOpen: true,
+      draftTransform: state.alignment.draftTransform ?? (state.originalImage && state.modifiedImage
+        ? createDefaultAlignmentTransform(state.originalImage, state.modifiedImage) : null),
       isPromptOpen: false
     }
   })),
+  runAutoAlignment: async () => {
+    const { originalImage, modifiedImage, alignment } = get();
+    if (!originalImage || !modifiedImage || alignment.status === "aligning" || !isAutoAlignmentAvailable(alignment.options)) return;
+    cancelAutoAlignment();
+    const request = new AbortController();
+    pendingAlignment = request;
+    set({ alignment: { ...alignment, status: "aligning", error: null } });
+    const result = await estimateAutoAlignment(originalImage, modifiedImage, alignment.options, request.signal);
+    if (pendingAlignment !== request || request.signal.aborted) return;
+    pendingAlignment = null;
+    if (get().originalImage?.url !== originalImage.url || get().modifiedImage?.url !== modifiedImage.url) return;
+    if (result.success && result.transform) {
+      get().applyAlignmentTransform(result.transform, {
+        method: "auto", confidence: result.confidence ?? null,
+        matchCount: result.matchCount ?? null, timestamp: Date.now()
+      });
+      if (alignment.isPanelOpen) get().openAlignmentPanel();
+    } else {
+      get().setAlignmentError(result.error?.code ?? "alignment/failed", result.error?.message ?? "Auto align failed. Try adjusting the images manually.");
+    }
+  },
   updateAlignmentOptions: (options) => set((state) => {
+    cancelAutoAlignment();
     const nextOptions = {
       ...state.alignment.options,
       ...options
@@ -210,6 +250,7 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
     return {
       alignment: {
         ...state.alignment,
+        status: state.alignment.appliedTransform ? "aligned" : "idle",
         options: nextOptions
       }
     };
@@ -238,54 +279,73 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
       aspectRatioLocked: locked
     }
   })),
-  setAlignmentDraftTransform: (transform) => set((state) => ({
-    alignment: {
-      ...state.alignment,
-      draftTransform: normalizeTransform(transform)
-    }
-  })),
+  setAlignmentDraftTransform: (transform) => {
+    cancelAutoAlignment();
+    set((state) => ({
+      alignment: {
+        ...state.alignment,
+        status: state.alignment.appliedTransform ? "aligned" : "idle",
+        draftTransform: normalizeTransform(transform)
+      }
+    }));
+  },
   resetAlignmentDraft: () => set((state) => {
+    cancelAutoAlignment();
     const { originalImage, modifiedImage, alignment } = state;
     return {
       alignment: {
         ...alignment,
+        status: alignment.appliedTransform ? "aligned" : "idle",
         draftTransform: originalImage && modifiedImage ? createDefaultAlignmentTransform(originalImage, modifiedImage) : null,
+        snappingEnabled: DEFAULT_ALIGNMENT_STATE.snappingEnabled,
+        aspectRatioLocked: DEFAULT_ALIGNMENT_STATE.aspectRatioLocked,
         error: null
       }
     };
   }),
-  applyAlignmentTransform: (transform, metadata) => set((state) => ({
-    compareMode: "slider",
-    alignment: {
-      ...state.alignment,
-      status: "aligned",
-      isPanelOpen: false,
-      isPromptOpen: false,
-      appliedTransform: normalizeTransform(transform),
-      draftTransform: normalizeTransform(transform),
-      metadata,
-      error: null
-    }
-  })),
-  restoreAlignmentTransform: (transform, metadata) => set((state) => ({
-    alignment: {
-      ...state.alignment,
-      status: transform ? "aligned" : "idle",
-      appliedTransform: transform ? normalizeTransform(transform) : null,
-      draftTransform: transform ? normalizeTransform(transform) : null,
-      metadata,
-      error: null,
-      isPromptOpen: false,
-      isPanelOpen: false
-    }
-  })),
-  resetAlignment: () => set((state) => ({
-    alignment: {
-      ...cloneDefaultAlignmentState(),
-      skippedPairKey: state.alignment.skippedPairKey
-    }
-  })),
+  applyAlignmentTransform: (transform, metadata) => {
+    cancelAutoAlignment();
+    set((state) => ({
+      compareMode: state.compareMode === "side-by-side" ? "slider" : state.compareMode,
+      alignment: {
+        ...state.alignment,
+        status: "aligned",
+        isPanelOpen: false,
+        isPromptOpen: false,
+        appliedTransform: normalizeTransform(transform),
+        draftTransform: normalizeTransform(transform),
+        metadata,
+        error: null
+      }
+    }));
+  },
+  restoreAlignmentTransform: (transform, metadata) => {
+    cancelAutoAlignment();
+    set((state) => ({
+      alignment: {
+        ...state.alignment,
+        status: transform ? "aligned" : "idle",
+        appliedTransform: transform ? normalizeTransform(transform) : null,
+        draftTransform: transform ? normalizeTransform(transform) : null,
+        metadata,
+        error: null,
+        isPromptOpen: false,
+        isPanelOpen: false
+      }
+    }));
+  },
+  resetAlignment: () => {
+    cancelAutoAlignment();
+    set((state) => ({
+      alignment: {
+        ...cloneDefaultAlignmentState(),
+        promptPairKey: state.alignment.promptPairKey,
+        skippedPairKey: state.alignment.skippedPairKey
+      }
+    }));
+  },
   clearAll: () => set((state) => {
+    cancelAutoAlignment();
     revokeUniqueObjectUrls([state.originalImage?.url, state.modifiedImage?.url]);
     return {
       originalImage: null,
@@ -294,6 +354,7 @@ export const useImageCompareStore = create<ImageCompareState>((set) => ({
       diffAlgorithm: "highlight",
       fadeValue: 500,
       sliderPosition: 0.5,
+      viewport: { ...DEFAULT_VIEWPORT },
       isMetadataPanelOpen: false,
       alignment: cloneDefaultAlignmentState()
     };

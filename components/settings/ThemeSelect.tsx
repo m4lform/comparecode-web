@@ -1,0 +1,28 @@
+"use client";
+
+import { SelectDropdown } from "@/components/ui/SelectDropdown";
+import { THEME_GROUPS } from "@/config/themes";
+import { useSettingsStore } from "@/store/useSettingsStore";
+import { MdPalette } from "react-icons/md";
+import { cn } from "@/utils/uiHelpers";
+
+const themeOptions = THEME_GROUPS.flatMap((group) => group.themes.map((theme) => ({ value: theme.id, label: theme.name, group: group.label })));
+
+export function ThemeSelect({ className, sidebar = false, showIcon = sidebar }: { className?: string; sidebar?: boolean; showIcon?: boolean }) {
+  const theme = useSettingsStore((state) => state.settings.theme);
+  const updateSettings = useSettingsStore((state) => state.updateSettings);
+  return (
+    <div className={cn("relative", className)}>
+      <SelectDropdown
+        label="Theme"
+        value={theme}
+        onChange={(value) => updateSettings({ theme: value })}
+        options={themeOptions}
+        className={sidebar ? "@max-[12rem]/navigation:[&>svg]:hidden" : undefined}
+        triggerClassName={cn(showIcon && "pl-9", sidebar && "h-10 rounded-lg transition-[background-color,border-color,box-shadow] @max-[12rem]/navigation:p-0 @max-[12rem]/navigation:text-transparent @max-[12rem]/navigation:overflow-hidden @max-[12rem]/navigation:whitespace-nowrap")}
+        menuClassName="min-w-44"
+      />
+      {showIcon && <MdPalette className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xl text-text-secondary" />}
+    </div>
+  );
+}

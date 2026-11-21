@@ -1,21 +1,29 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { isEditableTarget, isWorkspaceShortcutBlocked } from "@/utils/workspaceKeyboard";
+
+import { useEffect, useMemo, useRef } from "react";
 import { MdKeyboardArrowDown, MdKeyboardArrowUp, MdKeyboardDoubleArrowDown, MdKeyboardDoubleArrowUp } from "react-icons/md";
 import { useEditorStore } from "@/features/compare/text/store/useTextStore";
+import { reportHistoryWriteError } from "@/store/reportHistoryWriteError";
 import { useEditorUIStore } from "@/features/compare/text/store/useTextUIStore";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { useTextCompareActions } from "@/features/compare/text/hooks/useTextCompareActions";
 import { ViewMode } from "@/types/settings";
 import { MergeDirection } from "@/types/ui";
 import { ComparisonToolbar } from "./ComparisonToolbar";
+import { IdenticalTextInfoBar } from "./IdenticalTextInfoBar";
 import { SplitView } from "./SplitView";
 import { UnifiedView } from "./UnifiedView";
 import { DiffMinimap } from "./DiffMinimap";
 import { cn } from "@/utils/uiHelpers";
+import { IconButton } from "@/components/ui/IconButton";
 import { useToastStore } from "@/store/useToastStore";
 import type { PushToastParams } from "@/store/useToastStore";
-import { isEditableTarget } from "@/features/compare/text/utils/keyboard";
+import { useSyntaxHighlighting } from "../../hooks/useSyntaxHighlighting";
+import { activeIgnorePatterns } from "../../services/diff/comparisonNormalizer";
+import { isComparisonStale } from "../../hooks/useRealtimeCompare";
+import { Button } from "@/components/ui/Button";
 
 function isMacPlatform(): boolean {
   if (typeof navigator === "undefined") {
@@ -25,9 +33,10 @@ function isMacPlatform(): boolean {
   return /Mac|iPhone|iPod|iPad/i.test(navigator.platform);
 }
 
-export function ComparisonView() {
+export function ComparisonView({ onImport }: { onImport: (side: "left" | "right") => void }) {
   const {
     comparisonResult,
+    areComparedTextsIdentical,
     leftText,
     rightText,
     selectBlock,
@@ -40,8 +49,10 @@ export function ComparisonView() {
     undoMergeStep,
     redoMergeStep
   } = useEditorStore();
-  const { isInputExpanded } = useEditorUIStore();
+  const { isInputExpanded, isLiveUpdatePaused } = useEditorUIStore();
   const { settings } = useSettingsStore();
+  const syntax = useSyntaxHighlighting(comparisonResult, settings);
+  const ignoreRulesKey = useMemo(() => activeIgnorePatterns(settings.ignoreRules).join("\u0000"), [settings.ignoreRules]);
   const { executeCompare } = useTextCompareActions();
   const pushToast = useToastStore((state): ((toast: PushToastParams) => void) => state.pushToast);
 
@@ -81,17 +92,14 @@ export function ComparisonView() {
   });
 
   useEffect(() => {
-    if (storeRefs.current.leftText || storeRefs.current.rightText) {
+    if (storeRefs.current.comparisonResult) {
       storeRefs.current.executeCompare(storeRefs.current.settings, false, true);
     }
-  }, [settings.precision]);
-
-  useEffect(() => {
-    storeRefs.current.selectBlock(null);
-  }, [settings.ignoreWhitespace]);
+  }, [settings.precision, settings.ignoreWhitespace, settings.ignoreCase, ignoreRulesKey]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isWorkspaceShortcutBlocked(event)) return;
       const refs = storeRefs.current;
       const editableTarget = isEditableTarget(event.target);
       const key = event.key;
@@ -138,6 +146,8 @@ export function ComparisonView() {
               icon: shouldUndo ? "undo" : "redo",
               dedupeKey: shouldUndo ? "nothing-to-undo" : "nothing-to-redo"
             });
+          } catch (error) {
+            reportHistoryWriteError(error);
           } finally {
             historyShortcutInFlight.current = false;
           }
@@ -211,21 +221,49 @@ export function ComparisonView() {
 
   const hasResult = comparisonResult && comparisonResult.blocks.length > 0;
   const hideBody = !hasResult && isInputExpanded;
+  const isStale = isComparisonStale(comparisonResult, leftText, rightText);
+  const staleMessage = !isStale ? null : !settings.isRealtimeCompareEnabled
+    ? "The comparison is out of date."
+    : isLiveUpdatePaused ? "Live input editor is paused because the comparison is large." : null;
 
   return (
     <div className={cn("flex w-full min-h-0 flex-col bg-bg-primary relative", !hideBody && "h-full")}>
-      {!hideBody && <ComparisonToolbar />}
+      {!hideBody && <ComparisonToolbar onImport={onImport} />}
+      {!hideBody && <IdenticalTextInfoBar isVisible={areComparedTextsIdentical} />}
+      {!hideBody && staleMessage && (
+        <div role="status" className="flex items-center justify-between gap-3 border-b border-info-border bg-info-bg px-3 py-1.5 text-sm text-info">
+          <span>{staleMessage}</span>
+          <Button size="sm" variant="outline" className="shrink-0" onClick={() => void executeCompare(settings, false, true)}>Update</Button>
+        </div>
+      )}
+      {!hideBody && comparisonResult?.limited && (
+        <div role="status" className="border-b border-info-border bg-info-bg px-3 py-2 text-sm text-info">
+          This comparison is large or complex. A simpler line diff is shown for some sections.
+        </div>
+      )}
+      {!hideBody && hasResult && syntax.limited && (
+        <div role="status" className="border-b border-info-border bg-info-bg px-3 py-2 text-sm text-info">
+          Syntax highlighting is unavailable for a large or complex source. Plain text is shown on that side.
+        </div>
+      )}
+      {!hideBody && comparisonResult && !comparisonResult.limited && !areComparedTextsIdentical &&
+        leftText !== rightText && comparisonResult.blocks.every((block) => block.kind === "Unchanged") && (
+        <div role="status" className="border-b border-info-border bg-info-bg px-3 py-2 text-sm text-info">
+          No differences under the current comparison settings.
+        </div>
+      )}
 
       {!hideBody && (
-        <div id="diff-container" className="flex flex-1 min-h-0 overflow-hidden relative" style={{ fontSize: `${settings.fontSize}px`, fontFamily: settings.fontFamily }}>
+        <div id="diff-container" className="flex flex-col flex-1 min-h-0 overflow-hidden relative" style={{ fontSize: `${settings.fontSize}px`, fontFamily: settings.fontFamily }}>
+          <div className="relative flex min-h-0 min-w-0 flex-1">
           {!hasResult ? (
             <div className="flex h-full w-full items-center justify-center">
               <p className="text-text-secondary">No comparison generated yet.</p>
             </div>
           ) : settings.viewMode === ViewMode.Split ? (
-            <SplitView />
+            <SplitView syntax={syntax} />
           ) : (
-            <UnifiedView />
+            <UnifiedView syntax={syntax} />
           )}
 
           {hasResult && (
@@ -233,50 +271,52 @@ export function ComparisonView() {
               <div className="pointer-events-auto h-full py-2">
                 <DiffMinimap
                   blocks={comparisonResult.blocks}
-                  ignoreWhitespace={settings.ignoreWhitespace}
                   onSegmentClick={handleSegmentClick}
                 />
               </div>
             </div>
           )}
 
-          {hasResult && settings.isJumpButtonsVisible && (
-            <div className="absolute bottom-4 right-4 sm:right-16 z-30 flex flex-col items-center gap-2">
-              <button
+          </div>
+          {hasResult && (settings.isJumpButtonsVisible || settings.isMergeJumpButtonsVisible) && <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border-default bg-bg-primary p-2 [@media(min-width:40rem)_and_(min-height:32rem)]:contents">
+          {settings.isJumpButtonsVisible && (
+            <div className="z-30 flex items-center gap-2 [@media(min-width:40rem)_and_(min-height:32rem)]:absolute [@media(min-width:40rem)_and_(min-height:32rem)]:bottom-4 [@media(min-width:40rem)_and_(min-height:32rem)]:right-16 [@media(min-width:40rem)_and_(min-height:32rem)]:flex-col">
+              <IconButton size="lg" variant="primary" shape="circle"
                 onClick={scrollToTop}
-                className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-primary text-white shadow-md hover:bg-accent-hover transition-colors duration-(--duration-short)"
+                className="shadow-md"
                 title="Jump to top"
               >
                 <MdKeyboardDoubleArrowUp className="text-2xl" />
-              </button>
-              <button
+              </IconButton>
+              <IconButton size="lg" variant="primary" shape="circle"
                 onClick={scrollToBottom}
-                className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-primary text-white shadow-md hover:bg-accent-hover transition-colors duration-(--duration-short)"
+                className="shadow-md"
                 title="Jump to bottom"
               >
                 <MdKeyboardDoubleArrowDown className="text-2xl" />
-              </button>
+              </IconButton>
             </div>
           )}
 
-          {hasResult && settings.isMergeJumpButtonsVisible && (
-            <div className="absolute top-4 right-4 sm:right-16 z-30 flex flex-col items-center gap-2">
-              <button
+          {settings.isMergeJumpButtonsVisible && (
+            <div className="z-30 flex items-center gap-2 [@media(min-width:40rem)_and_(min-height:32rem)]:absolute [@media(min-width:40rem)_and_(min-height:32rem)]:top-4 [@media(min-width:40rem)_and_(min-height:32rem)]:right-16 [@media(min-width:40rem)_and_(min-height:32rem)]:flex-col">
+              <IconButton size="lg" variant="primary" shape="circle"
                 onClick={jumpToPreviousBlock}
-                className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-primary text-white shadow-md hover:bg-accent-hover transition-colors duration-(--duration-short)"
+                className="shadow-md"
                 title="Jump to previous difference"
               >
                 <MdKeyboardArrowUp className="text-2xl" />
-              </button>
-              <button
+              </IconButton>
+              <IconButton size="lg" variant="primary" shape="circle"
                 onClick={jumpToNextBlock}
-                className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-primary text-white shadow-md hover:bg-accent-hover transition-colors duration-(--duration-short)"
+                className="shadow-md"
                 title="Jump to next difference"
               >
                 <MdKeyboardArrowDown className="text-2xl" />
-              </button>
+              </IconButton>
             </div>
           )}
+          </div>}
         </div>
       )}
     </div>

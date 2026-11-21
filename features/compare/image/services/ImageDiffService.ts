@@ -1,14 +1,110 @@
 import { DiffAlgorithm } from "../store/useImageCompareStore";
 import { ImageAffineTransform } from "./alignment/types";
-import { buildAffineMatrix, getTransformedBounds } from "./alignment/transformUtils";
+import { buildAffineMatrix, getTransformedBounds, hasSameAspectRatio } from "./alignment/transformUtils";
+import { getWorkingScale, scaleSize } from "@/utils/canvasBudget";
 
 export interface DiffStats {
   totalPixels: number;
   differentPixels: number;
   percentDifferent: number;
+  scale?: number;
 }
 
-function loadImageToCanvas(url: string): Promise<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }> {
+interface LoadedImageCanvas {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
+export interface ComparisonLayers {
+  width: number;
+  height: number;
+  scale: number;
+  original: HTMLCanvasElement;
+  modified: HTMLCanvasElement;
+}
+
+const IMAGE_CACHE_LIMIT = 6;
+const imageCache = new Map<string, Promise<LoadedImageCanvas>>();
+
+function loadImageToCanvas(url: string): Promise<LoadedImageCanvas> {
+  const cached = imageCache.get(url);
+  if (cached) {
+    imageCache.delete(url);
+    imageCache.set(url, cached);
+    return cached;
+  }
+  const request = decodeImageToCanvas(url);
+  imageCache.set(url, request);
+  request.catch(() => {
+    if (imageCache.get(url) === request) imageCache.delete(url);
+  });
+  while (imageCache.size > IMAGE_CACHE_LIMIT) {
+    imageCache.delete(imageCache.keys().next().value!);
+  }
+  return request;
+}
+
+export function loadComparisonImage(url: string): Promise<HTMLCanvasElement> {
+  return loadImageToCanvas(url).then(({ canvas }) => canvas);
+}
+
+function createLayerCanvas(width: number, height: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Could not create comparison layer context");
+  }
+  return { canvas, ctx };
+}
+
+export async function createComparisonLayers(
+  originalUrl: string,
+  modifiedUrl: string,
+  alignmentTransform?: ImageAffineTransform | null
+): Promise<ComparisonLayers> {
+  const [original, modified] = await Promise.all([loadImageToCanvas(originalUrl), loadImageToCanvas(modifiedUrl)]);
+
+  if (alignmentTransform) {
+    const bounds = getTransformedBounds(alignmentTransform, modified.canvas.width, modified.canvas.height);
+    const minX = Math.min(0, bounds.x);
+    const minY = Math.min(0, bounds.y);
+    const width = Math.max(1, Math.ceil(Math.max(original.canvas.width, bounds.x + bounds.width) - minX));
+    const height = Math.max(1, Math.ceil(Math.max(original.canvas.height, bounds.y + bounds.height) - minY));
+    const scale = getWorkingScale(width, height);
+    const size = scaleSize(width, height, scale);
+    const originalLayer = createLayerCanvas(size.width, size.height);
+    const modifiedLayer = createLayerCanvas(size.width, size.height);
+    for (const layer of [originalLayer, modifiedLayer]) {
+      layer.ctx.imageSmoothingEnabled = true;
+      layer.ctx.imageSmoothingQuality = "high";
+    }
+    originalLayer.ctx.setTransform(scale, 0, 0, scale, -minX * scale, -minY * scale);
+    originalLayer.ctx.drawImage(original.canvas, 0, 0);
+    originalLayer.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const matrix = buildAffineMatrix(alignmentTransform, modified.canvas.width, modified.canvas.height);
+    modifiedLayer.ctx.setTransform(matrix.a * scale, matrix.b * scale, matrix.c * scale, matrix.d * scale, (matrix.e - minX) * scale, (matrix.f - minY) * scale);
+    modifiedLayer.ctx.drawImage(modified.canvas, 0, 0);
+    modifiedLayer.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return { width, height, scale, original: originalLayer.canvas, modified: modifiedLayer.canvas };
+  }
+
+  const width = Math.max(original.canvas.width, modified.canvas.width);
+  const height = Math.max(original.canvas.height, modified.canvas.height);
+  const scale = getWorkingScale(width, height);
+  const size = scaleSize(width, height, scale);
+  const originalLayer = createLayerCanvas(size.width, size.height);
+  const modifiedLayer = createLayerCanvas(size.width, size.height);
+  for (const [layer, source] of [[originalLayer, original], [modifiedLayer, modified]] as const) {
+    layer.ctx.imageSmoothingEnabled = true;
+    layer.ctx.imageSmoothingQuality = "high";
+    layer.ctx.drawImage(source.canvas, 0, 0, size.width, size.height);
+  }
+  return { width, height, scale, original: originalLayer.canvas, modified: modifiedLayer.canvas };
+}
+
+function decodeImageToCanvas(url: string): Promise<LoadedImageCanvas> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -94,40 +190,80 @@ function drawCheckerboard(ctx: CanvasRenderingContext2D, width: number, height: 
   }
 }
 
-function createAlignedPair(
+export function createAlignedPair(
   original: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D },
   modified: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D },
   transform: ImageAffineTransform | null | undefined
 ): {
   width: number;
   height: number;
+  scale: number;
   originalData: Uint8ClampedArray;
   modifiedData: Uint8ClampedArray;
 } {
   if (!transform) {
-    const width = Math.max(original.canvas.width, modified.canvas.width);
-    const height = Math.max(original.canvas.height, modified.canvas.height);
-    const totalPixels = width * height;
-    const originalData = original.ctx.getImageData(0, 0, original.canvas.width, original.canvas.height).data;
-    const modifiedData = modified.ctx.getImageData(0, 0, modified.canvas.width, modified.canvas.height).data;
-    const o = new Uint8ClampedArray(totalPixels * 4);
-    const m = new Uint8ClampedArray(totalPixels * 4);
+    const fullWidth = Math.max(original.canvas.width, modified.canvas.width);
+    const fullHeight = Math.max(original.canvas.height, modified.canvas.height);
+    const scale = getWorkingScale(fullWidth, fullHeight);
+    const { width, height } = scaleSize(fullWidth, fullHeight, scale);
 
-    for (let y = 0; y < original.canvas.height; y++) {
-      const srcStart = y * original.canvas.width * 4;
-      const srcEnd = srcStart + original.canvas.width * 4;
-      const dstStart = y * width * 4;
-      o.set(originalData.subarray(srcStart, srcEnd), dstStart);
+    if (
+      scale === 1 &&
+      original.canvas.width === width &&
+      original.canvas.height === height &&
+      modified.canvas.width === width &&
+      modified.canvas.height === height
+    ) {
+      return {
+        width,
+        height,
+        scale,
+        originalData: original.ctx.getImageData(0, 0, width, height).data,
+        modifiedData: modified.ctx.getImageData(0, 0, width, height).data
+      };
     }
 
-    for (let y = 0; y < modified.canvas.height; y++) {
-      const srcStart = y * modified.canvas.width * 4;
-      const srcEnd = srcStart + modified.canvas.width * 4;
-      const dstStart = y * width * 4;
-      m.set(modifiedData.subarray(srcStart, srcEnd), dstStart);
+    const originalCanvas = document.createElement("canvas");
+    const modifiedCanvas = document.createElement("canvas");
+    originalCanvas.width = width;
+    originalCanvas.height = height;
+    modifiedCanvas.width = width;
+    modifiedCanvas.height = height;
+
+    const originalCtx = originalCanvas.getContext("2d");
+    const modifiedCtx = modifiedCanvas.getContext("2d");
+    if (!originalCtx || !modifiedCtx) {
+      throw new Error("Could not create aligned canvas context");
     }
 
-    return { width, height, originalData: o, modifiedData: m };
+    if (scale < 1) {
+      for (const ctx of [originalCtx, modifiedCtx]) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      }
+    }
+
+    if (hasSameAspectRatio(original.canvas.width, original.canvas.height, modified.canvas.width, modified.canvas.height)) {
+      originalCtx.imageSmoothingEnabled = true;
+      originalCtx.imageSmoothingQuality = "high";
+      originalCtx.drawImage(original.canvas, 0, 0, fullWidth, fullHeight);
+
+      modifiedCtx.imageSmoothingEnabled = true;
+      modifiedCtx.imageSmoothingQuality = "high";
+      modifiedCtx.drawImage(modified.canvas, 0, 0, fullWidth, fullHeight);
+    } else {
+      originalCtx.drawImage(original.canvas, 0, 0);
+      modifiedCtx.drawImage(modified.canvas, 0, 0);
+    }
+
+    return {
+      width,
+      height,
+      scale,
+      originalData: originalCtx.getImageData(0, 0, width, height).data,
+      modifiedData: modifiedCtx.getImageData(0, 0, width, height).data
+    };
   }
 
   const modifiedBounds = getTransformedBounds(transform, modified.canvas.width, modified.canvas.height);
@@ -135,8 +271,10 @@ function createAlignedPair(
   const minY = Math.min(0, modifiedBounds.y);
   const maxX = Math.max(original.canvas.width, modifiedBounds.x + modifiedBounds.width);
   const maxY = Math.max(original.canvas.height, modifiedBounds.y + modifiedBounds.height);
-  const width = Math.max(1, Math.ceil(maxX - minX));
-  const height = Math.max(1, Math.ceil(maxY - minY));
+  const fullWidth = Math.max(1, Math.ceil(maxX - minX));
+  const fullHeight = Math.max(1, Math.ceil(maxY - minY));
+  const scale = getWorkingScale(fullWidth, fullHeight);
+  const { width, height } = scaleSize(fullWidth, fullHeight, scale);
   const offsetX = -minX;
   const offsetY = -minY;
   const originalCanvas = document.createElement("canvas");
@@ -151,15 +289,24 @@ function createAlignedPair(
     throw new Error("Could not create aligned canvas context");
   }
 
+  if (scale < 1) {
+    for (const ctx of [originalCtx, modifiedCtx]) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+    }
+    originalCtx.setTransform(scale, 0, 0, scale, 0, 0);
+  }
   originalCtx.drawImage(original.canvas, offsetX, offsetY);
+  if (scale < 1) originalCtx.setTransform(1, 0, 0, 1, 0, 0);
   const matrix = buildAffineMatrix(transform, modified.canvas.width, modified.canvas.height);
-  modifiedCtx.setTransform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e + offsetX, matrix.f + offsetY);
+  modifiedCtx.setTransform(matrix.a * scale, matrix.b * scale, matrix.c * scale, matrix.d * scale, (matrix.e + offsetX) * scale, (matrix.f + offsetY) * scale);
   modifiedCtx.drawImage(modified.canvas, 0, 0);
   modifiedCtx.setTransform(1, 0, 0, 1, 0, 0);
 
   return {
     width,
     height,
+    scale,
     originalData: originalCtx.getImageData(0, 0, width, height).data,
     modifiedData: modifiedCtx.getImageData(0, 0, width, height).data
   };
@@ -219,6 +366,12 @@ export async function renderDiff(
   const width = pair.width;
   const height = pair.height;
   const totalPixels = width * height;
+  const toStats = (differentPixels: number): DiffStats => ({
+    totalPixels: Math.round(totalPixels / (pair.scale * pair.scale)),
+    differentPixels: Math.round(differentPixels / (pair.scale * pair.scale)),
+    percentDifferent: totalPixels > 0 ? (differentPixels / totalPixels) * 100 : 0,
+    scale: pair.scale
+  });
   let differentPixels = 0;
   const DIFF_THRESHOLD = 30;
   const o = pair.originalData;
@@ -263,7 +416,7 @@ export async function renderDiff(
     ctx.shadowBlur = 0;
     ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.lineWidth = 1;
     [width, width * 2].forEach((x) => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); });
-    return { totalPixels, differentPixels, percentDifferent: (differentPixels / totalPixels) * 100 };
+    return toStats(differentPixels);
   }
 
   if (algorithm === "ssim") {
@@ -314,7 +467,7 @@ export async function renderDiff(
       }
     }
     ctx.putImageData(out, 0, 0);
-    return { totalPixels, differentPixels, percentDifferent: (differentPixels / totalPixels) * 100 };
+    return toStats(differentPixels);
   }
 
   if (algorithm === "edge") {
@@ -344,7 +497,7 @@ export async function renderDiff(
       }
     }
     ctx.putImageData(out, 0, 0);
-    return { totalPixels, differentPixels, percentDifferent: (differentPixels / totalPixels) * 100 };
+    return toStats(differentPixels);
   }
 
   targetCanvas.width = width; targetCanvas.height = height;
@@ -451,11 +604,7 @@ export async function renderDiff(
   }
 
   ctx.putImageData(outputData, 0, 0);
-  return {
-    totalPixels,
-    differentPixels,
-    percentDifferent: totalPixels > 0 ? (differentPixels / totalPixels) * 100 : 0
-  };
+  return toStats(differentPixels);
 }
 
 export async function renderFade(
@@ -500,4 +649,184 @@ export async function renderFade(
   ctx.globalAlpha = clampedAlpha;
   ctx.drawImage(modifiedCompositeCanvas, 0, 0, width, height);
   ctx.globalAlpha = 1;
+}
+
+export async function renderSlider(
+  originalUrl: string,
+  modifiedUrl: string,
+  targetCanvas: HTMLCanvasElement,
+  sliderPosition: number,
+  alignmentTransform?: ImageAffineTransform | null,
+  options?: { showLabels?: boolean }
+): Promise<void> {
+  const clampedPosition = Math.min(1, Math.max(0, sliderPosition));
+  const showLabels = options?.showLabels ?? true;
+
+  const [original, modified] = await Promise.all([
+    loadImageToCanvas(originalUrl),
+    loadImageToCanvas(modifiedUrl)
+  ]);
+
+  const ctx = targetCanvas.getContext("2d");
+  if (!ctx) return;
+
+  if (alignmentTransform) {
+    const bounds = getTransformedBounds(alignmentTransform, modified.canvas.width, modified.canvas.height);
+    const minX = Math.min(0, bounds.x);
+    const minY = Math.min(0, bounds.y);
+    const maxX = Math.max(original.canvas.width, bounds.x + bounds.width);
+    const maxY = Math.max(original.canvas.height, bounds.y + bounds.height);
+    const width = Math.max(1, Math.ceil(maxX - minX));
+    const height = Math.max(1, Math.ceil(maxY - minY));
+    targetCanvas.width = width;
+    targetCanvas.height = height;
+
+    const originOffsetX = -minX;
+    const originOffsetY = -minY;
+    const divX = clampedPosition * width;
+    const matrix = buildAffineMatrix(alignmentTransform, modified.canvas.width, modified.canvas.height);
+
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.save();
+    ctx.translate(originOffsetX, originOffsetY);
+    ctx.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
+    ctx.drawImage(modified.canvas, 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, divX, height);
+    ctx.clip();
+    ctx.drawImage(original.canvas, originOffsetX, originOffsetY);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(divX, 0);
+    ctx.lineTo(divX, height);
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = Math.max(2, Math.round(width * 0.002));
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 4;
+    ctx.stroke();
+    ctx.restore();
+
+    if (showLabels) {
+      const fontSize = Math.max(12, Math.round(height * 0.025));
+      ctx.save();
+      ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.shadowColor = "rgba(0,0,0,0.85)";
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+      const pad = Math.max(10, Math.round(fontSize * 0.8));
+      ctx.fillText("Original", pad, pad + fontSize);
+      const modLabel = "Modified";
+      const modWidth = ctx.measureText(modLabel).width;
+      ctx.fillText(modLabel, width - modWidth - pad, pad + fontSize);
+      ctx.restore();
+    }
+
+    return;
+  }
+
+  const width = Math.max(original.canvas.width, modified.canvas.width);
+  const height = Math.max(original.canvas.height, modified.canvas.height);
+  targetCanvas.width = width;
+  targetCanvas.height = height;
+
+  const divX = clampedPosition * width;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(modified.canvas, 0, 0, width, height);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, divX, height);
+  ctx.clip();
+  ctx.drawImage(original.canvas, 0, 0, width, height);
+  ctx.restore();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(divX, 0);
+  ctx.lineTo(divX, height);
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.lineWidth = Math.max(2, Math.round(width * 0.002));
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 4;
+  ctx.stroke();
+  ctx.restore();
+
+  if (showLabels) {
+    const fontSize = Math.max(12, Math.round(height * 0.025));
+    ctx.save();
+    ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+    const pad = Math.max(10, Math.round(fontSize * 0.8));
+    ctx.fillText("Original", pad, pad + fontSize);
+    const modLabel = "Modified";
+    const modWidth = ctx.measureText(modLabel).width;
+    ctx.fillText(modLabel, width - modWidth - pad, pad + fontSize);
+    ctx.restore();
+  }
+}
+
+export async function renderSideBySide(
+  originalUrl: string,
+  modifiedUrl: string,
+  targetCanvas: HTMLCanvasElement,
+  options?: { showLabels?: boolean }
+): Promise<void> {
+  const showLabels = options?.showLabels ?? true;
+  const [original, modified] = await Promise.all([
+    loadImageToCanvas(originalUrl),
+    loadImageToCanvas(modifiedUrl)
+  ]);
+
+  const targetHeight = Math.max(original.canvas.height, modified.canvas.height);
+  const origScale = targetHeight / original.canvas.height;
+  const modScale = targetHeight / modified.canvas.height;
+
+  const origWidth = Math.round(original.canvas.width * origScale);
+  const modWidth = Math.round(modified.canvas.width * modScale);
+  const dividerWidth = Math.max(2, Math.round(targetHeight * 0.003));
+  const totalWidth = origWidth + modWidth + dividerWidth;
+
+  targetCanvas.width = totalWidth;
+  targetCanvas.height = targetHeight;
+
+  const ctx = targetCanvas.getContext("2d");
+  if (!ctx) return;
+
+  ctx.clearRect(0, 0, totalWidth, targetHeight);
+
+  drawCheckerboard(ctx, totalWidth, targetHeight);
+
+  ctx.drawImage(original.canvas, 0, 0, origWidth, targetHeight);
+  ctx.drawImage(modified.canvas, origWidth + dividerWidth, 0, modWidth, targetHeight);
+
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillRect(origWidth, 0, dividerWidth, targetHeight);
+
+  if (showLabels) {
+    const fontSize = Math.max(12, Math.round(targetHeight * 0.025));
+    ctx.save();
+    ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.shadowColor = "rgba(0,0,0,0.85)";
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+    const pad = Math.max(10, Math.round(fontSize * 0.8));
+    ctx.fillText("Original", pad, pad + fontSize);
+    ctx.fillText("Modified", origWidth + dividerWidth + pad, pad + fontSize);
+    ctx.restore();
+  }
 }

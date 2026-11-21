@@ -1,32 +1,23 @@
 import { useMemo } from "react";
 import { ComparisonResult, DiffChangeType, BlockType } from "@/features/compare/text/types/diff";
-import { AppSettings } from "@/types/settings";
 import { SplitRowData } from "@/features/compare/text/components/diff/SplitRow";
+import { getCollapsedRowInfo, HiddenRange } from "@/features/compare/text/utils/unchangedRegions";
 
-export function useCalculateSplitRows(comparisonResult: ComparisonResult | null, settings: AppSettings) {
-  return useMemo(() => {
+export function calculateSplitRows(comparisonResult: ComparisonResult | null, hiddenRanges?: ReadonlyMap<string, HiddenRange> | null): SplitRowData[] {
     const result: Array<SplitRowData> = [];
     if (!comparisonResult) return result;
 
     const isImaginary = (line: { kind: DiffChangeType } | undefined) => !line || line.kind === DiffChangeType.Imaginary;
-    const reorderGhostRowsToBottom = (lines: Array<{ kind: DiffChangeType }>, maxLines: number): Array<number> => {
-      const nonGhost: Array<number> = [];
-      const ghost: Array<number> = [];
-
-      for (let idx = 0; idx < maxLines; idx++) {
-        if (isImaginary(lines[idx])) {
-          ghost.push(idx);
-        } else {
-          nonGhost.push(idx);
-        }
+    const displayIndices = (lines: Array<{ kind: DiffChangeType }>, count: number) => {
+      const real: number[] = [], imaginary: number[] = [];
+      for (let index = 0; index < count; index++) {
+        (isImaginary(lines[index]) ? imaginary : real).push(index);
       }
-
-      return nonGhost.concat(ghost);
+      return real.concat(imaginary);
     };
-
-    comparisonResult.blocks.forEach((block) => {
-      const isIgnoredWhitespace = settings.ignoreWhitespace && block.isWhitespaceChange;
-      const isSelectable = block.kind !== BlockType.Unchanged && !isIgnoredWhitespace;
+    const lastBlockIndex = comparisonResult.blocks.length - 1;
+    comparisonResult.blocks.forEach((block, blockIndex) => {
+      const isSelectable = block.kind !== BlockType.Unchanged;
       const maxLines = Math.max(block.oldLines.length, block.newLines.length);
 
       if (maxLines === 0) return;
@@ -44,19 +35,13 @@ export function useCalculateSplitRows(comparisonResult: ComparisonResult | null,
         });
       }
 
-      let oldDisplayIndices = Array.from({ length: maxLines }, (_, idx) => idx);
-      let newDisplayIndices = Array.from({ length: maxLines }, (_, idx) => idx);
-
-      if (block.kind === BlockType.Modified && maxLines > 1) {
-        oldDisplayIndices = reorderGhostRowsToBottom(block.oldLines, maxLines);
-        newDisplayIndices = reorderGhostRowsToBottom(block.newLines, maxLines);
-      }
-
+      const oldIndices = block.kind === BlockType.Modified ? displayIndices(block.oldLines, maxLines) : null;
+      const newIndices = block.kind === BlockType.Modified ? displayIndices(block.newLines, maxLines) : null;
       const lineRows: Array<{ oldIndex: number; newIndex: number }> = [];
 
       for (let i = 0; i < maxLines; i++) {
-        const oldIndex = oldDisplayIndices[i] ?? -1;
-        const newIndex = newDisplayIndices[i] ?? -1;
+        const oldIndex = oldIndices?.[i] ?? i;
+        const newIndex = newIndices?.[i] ?? i;
 
         const oldLine = oldIndex >= 0 ? block.oldLines[oldIndex] : undefined;
         const newLine = newIndex >= 0 ? block.newLines[newIndex] : undefined;
@@ -68,7 +53,24 @@ export function useCalculateSplitRows(comparisonResult: ComparisonResult | null,
         lineRows.push({ oldIndex, newIndex });
       }
 
+      const hidden = hiddenRanges?.get(block.id);
       for (let i = 0; i < lineRows.length; i++) {
+        if (hidden && i >= hidden.start && i < hidden.end) {
+          if (i === hidden.start) {
+            result.push({
+              id: `${block.id}-collapsed`,
+              type: "collapsed",
+              block,
+              oldIndex: -1,
+              newIndex: -1,
+              isFirst: false,
+              isLast: false,
+              isSelectable: false,
+              collapsed: getCollapsedRowInfo(block, hidden, blockIndex === 0, blockIndex === lastBlockIndex)
+            });
+          }
+          continue;
+        }
         const lineRow = lineRows[i];
         result.push({
           id: `${block.id}-line-${i}`,
@@ -98,6 +100,9 @@ export function useCalculateSplitRows(comparisonResult: ComparisonResult | null,
       }
     });
     return result;
-  }, [comparisonResult, settings.ignoreWhitespace]);
+}
+
+export function useCalculateSplitRows(comparisonResult: ComparisonResult | null, hiddenRanges?: ReadonlyMap<string, HiddenRange> | null) {
+  return useMemo(() => calculateSplitRows(comparisonResult, hiddenRanges), [comparisonResult, hiddenRanges]);
 }
 

@@ -1,139 +1,61 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { MdContentCopy, MdSwapHoriz, MdDelete, MdDescription, MdCheck } from "react-icons/md";
+import { useMemo, useState } from "react";
+import { MdCheck, MdContentCopy, MdDelete, MdFileOpen, MdSwapHoriz } from "react-icons/md";
 import { useEditorStore } from "@/features/compare/text/store/useTextStore";
 import { useSettingsStore } from "@/store/useSettingsStore";
 import { useTextCompareActions } from "@/features/compare/text/hooks/useTextCompareActions";
 import { calculateStats } from "@/features/compare/text/utils/diffHelpers";
-import { Button } from "@/components/ui/Button";
 import { UI_CONSTANTS } from "@/config/constants";
+import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
+import { ExportDialog } from "./ExportDialog";
+import { WorkspaceToolbar } from "@/components/ui/WorkspaceToolbar";
 
-export function ComparisonToolbar() {
+export function ComparisonToolbar({ onImport }: { onImport: (side: "left" | "right") => void }) {
   const { comparisonResult, leftText, rightText } = useEditorStore();
-  const { settings } = useSettingsStore();
+  const settings = useSettingsStore((state) => state.settings);
   const { executeClear, executeSwap } = useTextCompareActions();
-
   const [copiedSide, setCopiedSide] = useState<"left" | "right" | null>(null);
+  const stats = useMemo(() => calculateStats(comparisonResult?.blocks), [comparisonResult]);
 
-  const stats = useMemo(() => {
-    return calculateStats(comparisonResult?.blocks, settings.ignoreWhitespace);
-  }, [comparisonResult, settings.ignoreWhitespace]);
-
-  const leftLineCount = useMemo(() => leftText ? leftText.split(/\r?\n/).length : 0, [leftText]);
-  const rightLineCount = useMemo(() => rightText ? rightText.split(/\r?\n/).length : 0, [rightText]);
-
-  const handleCopy = (text: string, side: "left" | "right") => {
+  const copy = async (side: "left" | "right") => {
+    const text = side === "left" ? leftText : rightText;
     if (!text) return;
-    navigator.clipboard.writeText(text).catch(() => {});
-    setCopiedSide(side);
-    setTimeout(() => {
-      setCopiedSide((prev) => (prev === side ? null : prev));
-    }, UI_CONSTANTS.COPY_FEEDBACK_TIMEOUT_MS);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedSide(side);
+      window.setTimeout(() => setCopiedSide((current) => current === side ? null : current), UI_CONSTANTS.COPY_FEEDBACK_TIMEOUT_MS);
+    } catch {
+      // Clipboard access depends on browser permission.
+    }
   };
 
-  return (
-    <div className="flex items-center justify-between border-b border-border-default bg-bg-secondary px-2 sm:px-4 h-(--header-height) shrink-0 z-20 select-none">
-      <div className="flex flex-1 items-center justify-between min-w-0">
-        <StatDisplay type="removals" count={stats.removals} />
-        <div className="flex items-center gap-1 sm:gap-4">
-          <span className="text-xs sm:text-sm text-text-secondary hidden md:block">{leftLineCount} lines</span>
-          <CopyButton text={leftText} side="left" copiedSide={copiedSide} onCopy={handleCopy} />
-        </div>
-      </div>
-
-      <button onClick={() => executeSwap(settings)} className="mx-3 sm:mx-6 text-2xl text-accent-primary hover:bg-hover-overlay p-2 rounded transition-colors duration-(--duration-short) shrink-0" title="Swap Sides">
-        <MdSwapHoriz />
-      </button>
-
-      <div className="flex flex-1 items-center justify-between min-w-0">
-        <StatDisplay type="additions" count={stats.additions} />
-        <div className="flex items-center gap-1 sm:gap-4">
-          <span className="text-xs sm:text-sm text-text-secondary hidden md:block">{rightLineCount} lines</span>
-          <CopyButton text={rightText} side="right" copiedSide={copiedSide} onCopy={handleCopy} />
-          <div className="w-px h-6 bg-border-default mx-2" />
-          <ClearButton onClear={executeClear} />
-        </div>
+  return <WorkspaceToolbar className="flex-wrap gap-y-0.5 @xl/workspace:flex-nowrap @lg/workspace:px-2">
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-0.5">
+      <span className="shrink-0 text-xs font-bold text-destructive @lg/workspace:text-sm"><span className="@3xl/workspace:hidden">-{stats.removals}</span><span className="hidden @3xl/workspace:inline">{stats.removals} removals</span></span>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <CopyButton side="left" disabled={!leftText || copiedSide === "left"} copied={copiedSide === "left"} onClick={() => void copy("left")} />
+        <IconButton size="sm" aria-label="Import original text file" title="Import" onClick={() => onImport("left")}><MdFileOpen /></IconButton>
       </div>
     </div>
-  );
-}
-
-interface StatDisplayProps {
-  type: "removals" | "additions";
-  count: number;
-}
-
-function StatDisplay({ type, count }: StatDisplayProps) {
-  const isRemovals = type === "removals";
-  const textColor = isRemovals ? "text-danger" : "text-success";
-  const sign = isRemovals ? "-" : "+";
-  const label = isRemovals ? "removals" : "additions";
-
-  return (
-    <div className="flex items-center gap-1 sm:gap-2 min-w-0">
-      <MdDescription className="text-xl text-text-secondary shrink-0" />
-      <span className={`font-bold ${textColor} text-sm`}>
-        <span className="inline sm:hidden">{count}<span className="hidden min-[400px]:inline"> {sign}</span></span>
-        <span className="hidden sm:inline">{count} {label}</span>
-      </span>
+    <IconButton size="sm" className="text-accent" aria-label="Swap sides" title="Swap sides" disabled={!leftText && !rightText} onClick={() => executeSwap(settings)}><MdSwapHoriz /></IconButton>
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-0.5">
+      <span className="shrink-0 text-xs font-bold text-success @lg/workspace:text-sm"><span className="@3xl/workspace:hidden">+{stats.additions}</span><span className="hidden @3xl/workspace:inline">{stats.additions} additions</span></span>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <CopyButton side="right" disabled={!rightText || copiedSide === "right"} copied={copiedSide === "right"} onClick={() => void copy("right")} />
+        <IconButton size="sm" aria-label="Import modified text file" title="Import" onClick={() => onImport("right")}><MdFileOpen /></IconButton>
+      </div>
     </div>
-  );
+    <div className="flex w-full shrink-0 items-center justify-end gap-1 border-t border-border-default pt-0.5 @xl/workspace:w-auto @xl/workspace:border-t-0 @xl/workspace:pt-0">
+      <ExportDialog result={comparisonResult} original={leftText} modified={rightText} />
+      <Button size="sm" variant="danger" aria-label="Clear comparison" disabled={!leftText && !rightText} onClick={executeClear} leftIcon={<MdDelete />}>Clear</Button>
+    </div>
+  </WorkspaceToolbar>;
 }
 
-interface CopyButtonProps {
-  text: string;
-  side: "left" | "right";
-  copiedSide: "left" | "right" | null;
-  onCopy: (text: string, side: "left" | "right") => void;
+function CopyButton({ side, disabled, copied, onClick }: { side: "left" | "right"; disabled: boolean; copied: boolean; onClick: () => void }) {
+  return <Button size="sm" variant="ghost" className="px-1.5 text-accent hover:text-accent" aria-label={`Copy ${side === "left" ? "original" : "modified"} text`} disabled={disabled} onClick={onClick} leftIcon={copied ? <MdCheck className="text-lg" /> : <MdContentCopy className="text-lg" />}>
+    {copied ? "Copied" : "Copy"}
+  </Button>;
 }
-
-function CopyButton({ text, side, copiedSide, onCopy }: CopyButtonProps) {
-  const isCopied = copiedSide === side;
-  const title = side === "left" ? "Copy Original Text" : "Copy Modified Text";
-
-  const isDisabled = isCopied || !text?.trim();
-
-  return (
-    <button
-      onClick={() => onCopy(text, side)}
-      disabled={isDisabled}
-      className="flex items-center gap-1 text-accent-primary hover:bg-hover-overlay px-3 py-1.5 rounded disabled:text-text-secondary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-all duration-(--duration-short)"
-      title={title}
-    >
-      {isCopied ? <MdCheck className="text-xl" /> : <MdContentCopy className="text-xl" />}
-      <span className="text-sm font-semibold hidden sm:inline">{isCopied ? "Copied" : "Copy"}</span>
-    </button>
-  );
-}
-
-interface ClearButtonProps {
-  onClear: () => void;
-}
-
-function ClearButton({ onClear }: ClearButtonProps) {
-  return (
-    <>
-      <Button
-        variant="danger"
-        size="sm"
-        onClick={onClear}
-        leftIcon={<MdDelete className="text-xl" />}
-        title="Clear comparison"
-        className="hidden md:inline-flex"
-      >
-        Clear
-      </Button>
-      <button
-        onClick={onClear}
-        className="md:hidden p-2 text-danger hover:bg-hover-overlay rounded transition-colors"
-        title="Clear comparison"
-      >
-        <MdDelete className="text-xl" />
-      </button>
-    </>
-  );
-}
-
-
-

@@ -1,102 +1,231 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent } from "react";
 import { MdExpandMore } from "react-icons/md";
+import { Popover } from "@/components/ui/Popover";
 import { cn } from "@/utils/uiHelpers";
+import { controlSizes, fieldBase, type ControlSize } from "./controlStyles";
 
-export interface SelectDropdownOption {
-  value: string;
+export interface SelectDropdownOption<T extends string = string> {
+  value: T;
   label: string;
+  group?: string;
 }
 
-interface SelectDropdownProps {
-  value: string;
-  options: Array<SelectDropdownOption>;
-  onChange: (value: string) => void;
+interface SelectDropdownProps<T extends string> extends Pick<ButtonHTMLAttributes<HTMLButtonElement>, "id" | "aria-describedby" | "aria-invalid"> {
+  label?: string;
+  value: T;
+  options: ReadonlyArray<SelectDropdownOption<T>>;
+  onChange: (value: T) => void;
+  size?: ControlSize;
+  disabled?: boolean;
   className?: string;
   triggerClassName?: string;
   menuClassName?: string;
 }
 
-export function SelectDropdown({
+export function SelectDropdown<T extends string>({
+  label,
   value,
   options,
   onChange,
   className,
   triggerClassName,
-  menuClassName
-}: SelectDropdownProps) {
+  menuClassName,
+  size = "md",
+  disabled = false,
+  ...triggerProps
+}: SelectDropdownProps<T>) {
+  const listboxId = useId();
   const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  if (disabled && isOpen) setIsOpen(false);
 
   const selectedLabel = useMemo(() => {
     const selected = options.find((option) => option.value === value);
     return selected?.label ?? value;
   }, [options, value]);
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (containerRef.current && !containerRef.current.contains(target)) {
-        setIsOpen(false);
+  const selectedIndex = useMemo(() => {
+    const index = options.findIndex((option) => option.value === value);
+    return index >= 0 ? index : 0;
+  }, [options, value]);
+
+  const safeActiveIndex = options[activeIndex] ? activeIndex : selectedIndex;
+
+  const sections = useMemo(() => {
+    const result: Array<{ group?: string; items: Array<{ option: SelectDropdownOption<T>; index: number }> }> = [];
+    options.forEach((option, index) => {
+      const current = result[result.length - 1];
+      if (current && current.group === option.group) {
+        current.items.push({ option, index });
+      } else {
+        result.push({ group: option.group, items: [{ option, index }] });
       }
-    };
+    });
+    return result;
+  }, [options]);
 
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsOpen(false);
+  const openDropdown = () => {
+    setActiveIndex(selectedIndex);
+    setIsOpen(true);
+  };
+
+  const commitSelection = (nextValue: T) => {
+    onChange(nextValue);
+    setIsOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const moveActiveIndex = (direction: 1 | -1) => {
+    if (options.length === 0) {
+      return;
+    }
+
+    setActiveIndex((current) => (current + direction + options.length) % options.length);
+  };
+
+  const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+
+    if (isOpen && (event.key === "Enter" || event.key === " ")) {
+      const option = options[safeActiveIndex];
+      if (option) {
+        commitSelection(option.value);
       }
-    };
+      return;
+    }
 
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
+    if (!isOpen && event.key === "ArrowDown") {
+      setActiveIndex(options.length ? (selectedIndex + 1) % options.length : 0);
+      setIsOpen(true);
+      return;
+    }
 
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, []);
+    if (!isOpen && event.key === "ArrowUp") {
+      setActiveIndex(options.length ? (selectedIndex - 1 + options.length) % options.length : 0);
+      setIsOpen(true);
+      return;
+    }
+
+    if (!isOpen) {
+      openDropdown();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      moveActiveIndex(1);
+    }
+
+    if (event.key === "ArrowUp") {
+      moveActiveIndex(-1);
+    }
+  };
+
+  const handleListboxKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActiveIndex(1);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActiveIndex(-1);
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const option = options[safeActiveIndex];
+      if (option) {
+        commitSelection(option.value);
+      }
+    }
+  };
+
+  const renderOption = ({ option, index }: { option: SelectDropdownOption<T>; index: number }) => {
+    const isSelected = option.value === value;
+    const isActive = index === safeActiveIndex;
+
+    return (
+      <button
+        key={option.value}
+        type="button"
+        role="option"
+        aria-selected={isSelected}
+        onMouseEnter={() => setActiveIndex(index)}
+        onClick={() => commitSelection(option.value)}
+        className={cn(
+          "w-full px-3 py-2 text-left text-sm transition-colors focus:outline-none",
+          isSelected || isActive
+            ? "bg-hover-overlay text-text-primary"
+            : "text-text-secondary hover:bg-hover-overlay hover:text-text-primary"
+        )}
+      >
+        {option.label}
+      </button>
+    );
+  };
 
   return (
-    <div ref={containerRef} className={cn("relative w-full", className)}>
+    <div className={cn("relative w-full", className)}>
       <button
+        {...triggerProps}
+        ref={triggerRef}
         type="button"
-        onClick={() => setIsOpen((previous) => !previous)}
+        disabled={disabled}
+        onClick={() => {
+          if (isOpen) {
+            setIsOpen(false);
+            return;
+          }
+
+          openDropdown();
+        }}
+        onKeyDown={handleTriggerKeyDown}
+        aria-haspopup="listbox"
+        aria-label={label ? `${label}: ${selectedLabel}` : undefined}
+        aria-expanded={isOpen && !disabled}
+        aria-controls={isOpen && !disabled ? listboxId : undefined}
         className={cn(
-          "w-full bg-bg-secondary text-text-primary border border-border-default rounded-md pl-3 pr-8 py-2 text-sm text-left outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary cursor-pointer transition-colors duration-(--duration-short)",
+          fieldBase,
+          controlSizes[size].field,
+          "pl-3 pr-8 text-left",
           triggerClassName
         )}
       >
         {selectedLabel}
       </button>
       <MdExpandMore className="absolute right-2 top-1/2 -translate-y-1/2 text-xl text-text-secondary pointer-events-none" />
-      {isOpen && (
-        <div
-          className={cn(
-            "absolute z-20 mt-1 w-full rounded-md border border-border-default bg-bg-secondary shadow-lg max-h-56 overflow-y-auto custom-scrollbar",
-            menuClassName
-          )}
-        >
-          {options.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => {
-                onChange(option.value);
-                setIsOpen(false);
-              }}
-              className={cn(
-                "w-full px-3 py-2 text-left text-sm transition-colors",
-                option.value === value
-                  ? "bg-hover-overlay text-text-primary"
-                  : "text-text-secondary hover:bg-hover-overlay hover:text-text-primary"
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <Popover
+        id={listboxId}
+        isOpen={isOpen && !disabled}
+        onOpenChange={setIsOpen}
+        triggerRef={triggerRef}
+        role="listbox"
+        onKeyDown={handleListboxKeyDown}
+        className={cn("w-full overflow-y-auto bg-bg-secondary py-1 custom-scrollbar", menuClassName)}
+      >
+        {sections.map((section, sectionIndex) => {
+          if (section.group === undefined) {
+            return <Fragment key={`options-${sectionIndex}`}>{section.items.map(renderOption)}</Fragment>;
+          }
+          const groupLabelId = `${listboxId}-group-${sectionIndex}`;
+          return (
+            <div key={groupLabelId} role="group" aria-labelledby={groupLabelId} className={cn(sectionIndex > 0 && "mt-1 border-t border-border-default pt-1")}>
+              <div id={groupLabelId} role="presentation" className="px-3 pb-1 pt-1.5 text-xs font-semibold text-text-secondary">{section.group}</div>
+              {section.items.map(renderOption)}
+            </div>
+          );
+        })}
+      </Popover>
     </div>
   );
 }

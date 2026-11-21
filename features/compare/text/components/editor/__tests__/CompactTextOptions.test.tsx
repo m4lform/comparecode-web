@@ -1,0 +1,65 @@
+import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
+import { CompactTextOptions } from "../CompactTextOptions";
+import { useSettingsStore } from "@/store/useSettingsStore";
+import { defaultSettings } from "@/config/defaults";
+import { SettingsService } from "@/services/settingsService";
+import { PrecisionLevel } from "@/types/settings";
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it("fits complete settings in priority order and preserves values when resizing", async () => {
+  let width = 1700;
+  let resize = () => {};
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resize = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => width);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 180 } as DOMRect);
+  vi.spyOn(SettingsService, "saveSettings").mockImplementation(() => {});
+  useSettingsStore.setState({ settings: { ...defaultSettings }, isLoaded: true });
+  const user = userEvent.setup();
+  const { container } = render(<CompactTextOptions />);
+  expect(screen.getByRole("checkbox", { name: "Ignore whitespace" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Font family:/ })).toBeInTheDocument();
+  await user.click(screen.getByRole("radio", { name: "Character" }));
+
+  act(() => { width = 400; resize(); });
+  expect(screen.getByRole("checkbox", { name: "Ignore whitespace" })).toBeInTheDocument();
+  expect(screen.queryByRole("radio", { name: "Unified" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Font family:/ })).not.toBeInTheDocument();
+  expect(container.querySelectorAll("[inert]")).toHaveLength(7);
+  expect(screen.queryByRole("checkbox", { name: "Hide unchanged lines" })).not.toBeInTheDocument();
+
+  act(() => { width = 100; resize(); });
+  expect(screen.queryAllByRole("radio")).toHaveLength(0);
+  act(() => { width = 1700; resize(); });
+  expect(screen.getByRole("checkbox", { name: "Case sensitive" })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Hide unchanged lines" })).toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: "Character" })).toHaveAttribute("aria-checked", "true");
+  expect(useSettingsStore.getState().settings.precision).toBe(PrecisionLevel.Character);
+});
+
+it("keeps compact settings inert without input", () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  const { container } = render(<CompactTextOptions disabled />);
+  expect(container.firstElementChild).toHaveAttribute("inert");
+  expect(container.firstElementChild).toHaveAttribute("aria-disabled", "true");
+});
+
+it("includes the active ignore rule indicator in the measured controls only when rules are active", () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(2000);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 100 } as DOMRect);
+  useSettingsStore.setState({ settings: { ...defaultSettings, ignoreRules: [{ id: "a", pattern: "x", kind: "literal", isEnabled: true }] }, isLoaded: true });
+  const { container, unmount } = render(<CompactTextOptions />);
+  expect(screen.getByRole("button", { name: "1 ignore rule" })).toBeInTheDocument();
+  expect(container.firstElementChild!.children).toHaveLength(10);
+  unmount();
+  useSettingsStore.setState({ settings: { ...defaultSettings, ignoreRules: [] }, isLoaded: true });
+  const { container: withoutRules } = render(<CompactTextOptions />);
+  expect(withoutRules.firstElementChild!.children).toHaveLength(9);
+});

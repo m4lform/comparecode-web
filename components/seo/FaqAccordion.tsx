@@ -2,11 +2,16 @@
 
 import { useState } from "react";
 import { MdKeyboardArrowDown } from "react-icons/md";
+import { SiGithub } from "react-icons/si";
 import { cn } from "@/utils/uiHelpers";
 
 export interface FaqItem {
   question: string;
   answer: string;
+  links?: Array<{
+    href: string;
+    label: string;
+  }>;
 }
 
 interface FaqAccordionProps {
@@ -14,20 +19,16 @@ interface FaqAccordionProps {
 }
 
 export function FaqAccordion({ items }: FaqAccordionProps) {
-  const [openItems, setOpenItems] = useState<Array<string>>([]);
+  const [openItem, setOpenItem] = useState<string | null>(null);
 
   const toggleItem = (question: string) => {
-    setOpenItems((current) => (
-      current.includes(question)
-        ? current.filter((item) => item !== question)
-        : [...current, question]
-    ));
+    setOpenItem((current) => current === question ? null : question);
   };
 
   return (
-    <div className="divide-y divide-border-default rounded-lg border border-border-default bg-bg-primary">
+    <div className="divide-y divide-border-default overflow-hidden rounded-xl border border-border-default bg-bg-primary">
       {items.map((item) => {
-        const isOpen = openItems.includes(item.question);
+        const isOpen = openItem === item.question;
         const panelId = `faq-${item.question.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
 
         return (
@@ -39,7 +40,7 @@ export function FaqAccordion({ items }: FaqAccordionProps) {
               aria-controls={panelId}
               className={cn(
                 "flex min-h-14 w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm font-semibold text-text-primary transition-colors hover:bg-hover-overlay",
-                isOpen && "bg-linear-to-r from-accent-primary/12 via-accent-primary/5 to-transparent"
+                isOpen && "bg-linear-to-r from-accent/12 via-accent/5 to-transparent"
               )}
             >
               <span className="flex min-h-8 items-center">{item.question}</span>
@@ -50,11 +51,35 @@ export function FaqAccordion({ items }: FaqAccordionProps) {
                 )}
               />
             </button>
-            {isOpen && (
-              <div id={panelId} className="px-4 py-4 text-sm leading-6 text-text-secondary">
-                {item.answer}
+            <div
+              id={panelId}
+              className={cn(
+                "grid transition-[grid-template-rows,opacity] duration-(--duration-medium) ease-[cubic-bezier(0.16,1,0.3,1)]",
+                isOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+              )}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <div className="px-4 py-4 text-sm leading-6 text-text-secondary">
+                  <p>{item.answer}</p>
+                  {item.links && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {item.links.map((link) => (
+                        <a
+                          key={link.href}
+                          href={link.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-md border border-border-default bg-bg-secondary px-2.5 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-hover-overlay hover:text-accent-hover"
+                        >
+                          <SiGithub className="text-base" />
+                          <span>{link.label}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
+            </div>
           </div>
         );
       })}

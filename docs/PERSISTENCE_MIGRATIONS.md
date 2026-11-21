@@ -1,0 +1,104 @@
+# Persistence and Migration Contract
+
+## Purpose
+
+CompareCode stores user work entirely in the browser. Released durable data must remain readable after application updates, and storage changes must have deterministic compatibility behavior.
+
+This document owns persistence boundaries and migration policy. Implementation files remain authoritative for current schema versions, exact types, and defaults.
+
+## Storage Ownership
+
+| Storage | Data | Owner | Durability |
+| --- | --- | --- | --- |
+| Dexie/IndexedDB `CompareCodeDatabase` | Comparison history, snapshots, bookmarks, and history steps | `services/db.ts` and `services/historyService.ts` | Durable across sessions and releases |
+| `localStorage` settings | Application settings under the key owned by `STORAGE_KEYS.SETTINGS` | `services/settingsService.ts` | Durable across sessions and releases |
+| `localStorage` Markdown state | Markdown content and UI preferences under the keys owned by `features/markdown/services/markdownStorage.ts` | `features/markdown/services/markdownStorage.ts` | Durable across sessions and releases |
+| `sessionStorage` Markdown history | Current-session undo and redo history | `features/markdown/services/markdownStorage.ts` | Session-scoped and disposable after the session |
+
+Future import, export, backup, or interchange files become durable external contracts once released and must define their own explicit format version and compatibility rules.
+
+## Portable History Backup v1
+
+`services/historyBackup.ts` owns the JSON interchange boundary: `format: "comparecode-history"`, `version: 1`, an ISO `exportedAt`, and `sessions` containing an `item` and ordered `steps`. `HistoryService` owns consistent two-table export and atomic, additive import. The UI previews counts before import and reports added/skipped counts afterward. The page-level export includes all history, regardless of the current list filter. Each card also exports its own session and steps through an indexed, session-scoped query. Both exports use the same v1 format and import flow. `services/historyDownload.ts` shares file creation, size validation, and download behavior between these actions.
+
+Backups preserve text, embedded image data, image metadata/alignment, bookmarks, timestamps, merge snapshots, and undo cursors. Temporary object URLs are removed. An image record without portable embedded data cannot be exported; the UI reports this rather than issuing a broken backup. Known legacy text records are normalized at this boundary without changing stored records. Application settings and Markdown drafts/session history are not part of this format.
+
+Input is limited to 100 MiB, 10,000 sessions and 100,000 steps. Unknown format versions, malformed fields, missing embedded images, duplicate session IDs, orphan steps and inconsistent sequence/cursor counts are rejected before writes. Import uses fresh session and step IDs and remaps relationships. Identical normalized sessions (ignoring IDs, including their metadata and steps) are skipped; differing sessions never overwrite existing records. Both tables are written in a single Dexie transaction using batched operations. No database version or released storage key changes are required.
+
+Validation covers JSON round trips, legacy normalization, malformed/future formats, delimiter collisions, image portability, alignment, steps and cursors. Browser integration checks must additionally exercise real IndexedDB export/import, duplicate skipping, restoration, and rollback on failed writes.
+
+Manual edits add the `EDIT` value to `HistoryActionType`. It is an additive enum value in existing history step records, not an indexed field, so `DB_CONFIG.VERSION` does not change and no record is converted. Backup format v1 accepts it because the reader validates against the current enum. A release before this value rejects a backup that contains an `EDIT` step, and shows such a step from IndexedDB as a generic merge entry while undo and redo keep working, because steps store complete text pairs.
+
+## Compatibility Invariants
+
+- Keep persistence ownership at the established service or storage boundary. UI components and feature stores consume normalized current values.
+- Preserve durable history, settings, Markdown content, and UI preferences through compatible readers or explicit migrations.
+- Do not use database recreation, table clearing, key deletion, or silent reset as a normal upgrade path.
+- Do not reinterpret a released value as a different meaning without an explicit conversion.
+- Apply defaults only to missing or invalid fields. Do not replace unrelated valid fields when one field needs normalization.
+- Complete conversion before the new writer emits a representation that older compatibility code cannot understand.
+- Keep migrations deterministic and safe to retry where the storage API permits retries.
+- Treat unknown future versions conservatively: do not silently coerce or overwrite them as if they were current data.
+
+## Required Value Handling
+
+Every persisted reader or migration defines these cases when they apply:
+
+- Missing data: return the documented default or empty state without creating unrelated records.
+- Malformed data: fail safely, preserve unrelated durable data, and avoid partial writes.
+- Legacy data: convert known released values to the current in-memory representation at the persistence boundary.
+- Current data: read without mutation unless a repair is explicitly required.
+- Future or unknown data: avoid destructive fallback and surface or retain enough information for a safe decision.
+
+## IndexedDB Changes
+
+- `DB_CONFIG.VERSION` in `config/constants.ts` is the current database version source of truth.
+- Retain every released Dexie version declaration needed to upgrade an existing browser database.
+- Add the next version with the complete schema for that version and an upgrade callback when stored records need conversion.
+- Perform multi-table changes inside the Dexie version upgrade transaction and keep related records consistent.
+- Populate newly required fields deterministically from released data or an explicit default.
+- Preserve identifiers and relationships between history sessions and their history steps.
+- Test upgrades from representative released versions instead of testing only a newly created database.
+
+## Local and Session Storage Changes
+
+The `theme` setting is normalized at the settings boundary by `normalizeThemeId` from `config/themes`. Registered IDs are kept. The retired `monokai` ID maps to `dark` through `LEGACY_THEME_ALIASES`, and the pre-hydration theme script applies the same alias so the first paint matches. Missing, malformed and unknown values use the default theme in memory without rewriting storage. The stored value changes only on the next user settings save. Custom diff colors are never rewritten. No key, schema or database change is required. See the [theming contract](architecture/theming.md).
+
+Text syntax highlighting adds `isSyntaxHighlightingEnabled` and `textSyntaxLanguage` to the existing settings object under the same key. `services/settingsService.ts` supplies missing fields from `defaultSettings`, validates the toggle as a boolean and the language against `TEXT_SYNTAX_LANGUAGES`, and defaults malformed or unknown values independently without changing unrelated valid preferences. Loading never rewrites stored data. No database version or History format change is required; source snapshots and syntax tokens are transient comparison presentation state.
+
+Expanding the syntax-language inventory preserves the existing `plain`, `javascript`, `typescript`, `json` and `python` IDs and adds distinct IDs to the same canonical list. The compatibility reader accepts all registered values without reinterpreting old selections. Settings tests round-trip every registered language; no new key or schema migration is needed.
+
+Ignore case adds the `ignoreCase` boolean to the same settings object, shown inverted as the "Case sensitive" switch. A missing or malformed value defaults to `false`, which is case sensitive, without rewriting storage.
+
+Ignore rules add `ignoreRules`, an array of `{ id, pattern, kind, isEnabled }`. A missing or malformed list becomes empty. Items without a non-empty unique string `id`, without a string `pattern`, or with a pattern longer than 500 characters are dropped. A missing `kind` becomes `literal`, a missing `isEnabled` becomes `true`, and at most 50 rules are kept. An unknown `kind` is preserved unchanged so a newer rule type is not lost, and the engine ignores it. Loading never rewrites storage.
+
+Live input editor adds the `isRealtimeCompareEnabled` boolean, which defaults to `false` when missing or malformed, without rewriting storage. Its paused state is transient.
+
+Hide unchanged lines adds `isHideUnchangedEnabled` and `unchangedContextLines` to the same settings object. The reader validates the toggle as a boolean and the context against `UNCHANGED_CONTEXT_LINE_OPTIONS` (0, 3, 5, 10), and defaults each malformed or missing value independently without rewriting storage. Reveal state is transient UI state and is never persisted.
+
+- Keep storage keys centralized in their current owner. Do not duplicate string keys in stores or components.
+- Prefer a compatibility reader when a shape can evolve safely under the same durable key.
+- When a durable key must change, read and validate the old value first, write the new value only after successful conversion, and remove the old value only when rollback and released compatibility no longer require it.
+- Keep legacy value maps narrowly scoped to the persistence boundary and remove aliases only after their supported compatibility window.
+- Session-scoped history may fall back to an empty history when malformed or incompatible, but that fallback must not alter durable Markdown content or preferences.
+
+## Validation Matrix
+
+A persistence change should cover the applicable cases below:
+
+| Case | Expected evidence |
+| --- | --- |
+| Fresh install | Current schema and defaults initialize correctly |
+| Oldest supported release | Data upgrades without loss |
+| Immediately previous release | Normal upgrade path succeeds |
+| Missing optional fields | Explicit defaults are applied |
+| Malformed values | Safe fallback occurs without unrelated mutation |
+| Interrupted or failed conversion | No partial durable-data loss |
+| Current representation | Read and write behavior remains stable |
+| Unknown future representation | No silent destructive downgrade |
+
+Use focused unit or integration tests where storage can be controlled deterministically. Use an isolated browser profile for an end-to-end migration walkthrough when browser storage behavior or a real Dexie upgrade is material.
+
+## Documentation Updates
+
+Update this contract in the same change when storage ownership, durability, schema strategy, key lifecycle, compatibility policy, or required validation changes. Do not update it for an implementation refactor that leaves the persistence contract unchanged.

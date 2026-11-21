@@ -1,4 +1,7 @@
-import { memo, useEffect, useRef } from "react";
+import { forwardRef, memo, useEffect, useImperativeHandle, useRef, type ReactNode } from "react";
+import { MdFileOpen } from "react-icons/md";
+import { FileDropZone } from "@/components/ui/FileDropZone";
+import { IconButton } from "@/components/ui/IconButton";
 
 interface EditorTextAreaProps {
   label: string;
@@ -8,10 +11,14 @@ interface EditorTextAreaProps {
   fontSize: number;
   fontFamily: string;
   isWordWrapEnabled: boolean;
+  onFileDrop?: (files: FileList) => void;
+  onOpenFile?: () => void;
+  mobileActions?: ReactNode;
 }
 
-export const EditorTextArea = memo(({ label, value, onChange, placeholder, fontSize, fontFamily, isWordWrapEnabled }: EditorTextAreaProps) => {
+export const EditorTextArea = memo(forwardRef<HTMLTextAreaElement | null, EditorTextAreaProps>(({ label, value, onChange, placeholder, fontSize, fontFamily, isWordWrapEnabled, onFileDrop, onOpenFile, mobileActions }, ref) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useImperativeHandle<HTMLTextAreaElement | null, HTMLTextAreaElement | null>(ref, () => textareaRef.current, []);
   const initialSyncDone = useRef(false);
 
   useEffect(() => {
@@ -28,15 +35,20 @@ export const EditorTextArea = memo(({ label, value, onChange, placeholder, fontS
   }, [value, onChange]);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex items-center gap-2 mb-1 sm:hidden">
+    <FileDropZone
+      className="flex min-w-0 flex-col flex-1 min-h-0"
+      label={`Drop file into ${label.toLowerCase()} text`}
+      onFilesDrop={(files) => onFileDrop?.(files)}
+    >
+      <div className="mb-1 flex items-center justify-between gap-2 sm:hidden">
         <span className="font-bold text-text-primary text-xs">{label}</span>
+        <div className="flex items-center gap-1">{mobileActions}<IconButton size="sm" aria-label={`Import ${label.toLowerCase()} text file`} title="Import" onClick={onOpenFile}><MdFileOpen /></IconButton></div>
       </div>
       <textarea
         ref={textareaRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="flex-1 resize-none rounded-md border border-border-default bg-bg-primary text-text-primary p-2 sm:p-3 shadow-sm focus:border-accent-primary focus:ring-1 focus:ring-accent-primary outline-none custom-scrollbar"
+        className="min-h-0 min-w-0 flex-1 resize-none rounded-xl border border-border-default bg-bg-primary text-text-primary p-2 sm:p-3 shadow-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none custom-scrollbar"
         style={{
           fontSize: `${fontSize}px`,
           fontFamily: fontFamily,
@@ -45,9 +57,9 @@ export const EditorTextArea = memo(({ label, value, onChange, placeholder, fontS
         placeholder={placeholder}
         spellCheck={false}
       />
-    </div>
+    </FileDropZone>
   );
-});
+}));
 
 EditorTextArea.displayName = "EditorTextArea";
 

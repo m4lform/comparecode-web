@@ -1,75 +1,116 @@
 # CompareCode
 
-CompareCode is a free and open-source text comparison utility built with **Next.js** and **React** (planned to be packaged with Electron).
+CompareCode is a free and open-source browser tool for comparing text, code, and images, previewing Markdown, and creating QR codes.
 
-It is designed to provide high-precision text comparison and flexible merging capabilities, allowing developers to analyze and synchronize differences between two text sources with ease.
+It is designed for local, account-free review workflows: compare code snippets, inspect visual differences between images, draft Markdown notes with live preview, and keep recent work in browser storage.
 
 > [!NOTE]
-> 
-> This project is currently **under development**.
+> This project is currently under development.
 
 ## 🧱 Module Architecture
 
-The project is organized into three clear modules:
+The project is organized into clear modules:
 
--   **Text:** Text comparison logic and UI.
--   **Image:** Image comparison logic and UI.
--   **Shared:** Common types, utilities, and reusable building blocks used by multiple modules.
+- **Text:** Text and code comparison logic and UI. See [Text Compare architecture](docs/architecture/text-compare.md).
+- **Image:** Image comparison logic and UI. See [Image Compare architecture](docs/architecture/image-compare.md).
+- **Markdown:** Markdown editor, preview, formatting, paste handling, and session history. See [Markdown architecture](docs/architecture/markdown.md).
+- **QR:** Static QR code creation and export. See [QR code architecture](docs/architecture/qr-code.md).
+- **Shared:** Common types, utilities, and reusable building blocks used by multiple modules.
 
-When contributing, keep module boundaries strict: implement module-specific changes inside that module, and move reusable cross-module code to Shared.
+When contributing, keep module boundaries strict: implement module-specific changes inside that module, and move only genuinely reusable cross-module code to its established shared owner.
 
 ## 🚀 Main Features
 
--   **Dual View Modes:** Switch between **Split (Side-by-Side)** and **Unified** views to visualize differences in the way that suits you best.
--   **High-Precision Highlighting:** Choose between **Word-level** or **Character-level** highlighting to spot even the smallest changes.
--   **Flexible Merging:** Interactively merge changes block-by-block from left-to-right or right-to-left to build the final result.
--   **Smart Comparison:** Optional "Ignore Whitespace" toggle to focus only on meaningful code or text changes.
--   **History Tracking:** Automatically saves comparison history locally so you can revisit previous diffs.
--   **Integrated Editor:** Edit original or modified texts on the fly and re-run comparisons instantly.
+- **Text and Code Diff:** Compare text or code side by side, with split and unified views.
+- **High-Precision Highlighting:** Choose word-level or character-level highlighting to spot small changes.
+- **Hide Unchanged Lines:** Collapse long unchanged sections around the changes, with adjustable context, and reveal them step by step or all at once.
+- **Ignore Options:** Ignore whitespace, turn off case sensitivity, or ignore custom text such as timestamps and build numbers on both sides.
+- **Text Transforms:** Lowercase text, sort lines, join lines, trim whitespace, or format, minify and sort JSON without losing numbers or key order.
+- **Live Input Editor:** Optionally recalculate the comparison while you edit the input after the first comparison.
+- **Flexible Merging:** Move changes block-by-block from left to right or right to left.
+- **Image Comparison:** Compare screenshots and images with visual diff modes, alignment, threshold, heatmap, fade, and slider tools.
+- **Markdown Preview:** Write Markdown with live preview, line numbers, local draft persistence, GitHub-style formatting, Mermaid diagrams, KaTeX formulas, and rich paste support.
+- **Session Undo/Redo:** Use Markdown undo/redo during the current browser session, with a dedicated history panel.
+- **Local History:** Store recent comparison history locally in the browser.
+- **Portable History:** Export and import comparison history, embedded images, bookmarks, alignment and merge steps using a versioned JSON backup.
+- **Markdown Download:** Save the current draft as a UTF-8 Markdown file.
+- **QR Code Generator:** Create static QR codes for URLs, text, Wi-Fi, email, and phone numbers with PNG and SVG exports.
+- **QR Scanner:** Read a QR code from an image you choose, paste, or drop on the page. Decoding runs locally in the browser.
+- **QR Styles:** Customize modules, corner borders and centers with linked or independent colors.
+- **No Account Required:** Core workflows run directly in the browser.
 
 ## 🛠 Technology Stack
 
--   **Framework:** Next.js & React
--   **Language:** TypeScript
--   **Styling:** Tailwind CSS
--   **State Management:** Zustand
--   **Diff Engine:** `diff` (npm package)
--   **Local Database:** Dexie.js (IndexedDB)
--   **Icons:** React Icons (Material Design)
+- **Framework:** Next.js and React
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS
+- **State Management:** Zustand
+- **Diff Engine:** Local bounded Myers sequence diff with Unicode-aware tokenization and move detection
+- **Local Database:** Dexie.js (IndexedDB)
+- **Markdown Rendering:** `react-markdown`, Remark/Rehype plugins, Mermaid, KaTeX
+- **Rich Paste Conversion:** Turndown
+- **Icons:** React Icons
 
 ## 📖 How to Use
 
-1.  **Input Text:** Paste or type your original text in the left panel and the modified version in the right panel.
-2.  **Compare:** Click the **Check it!** button to generate the visual comparison.
-3.  **Analyze & Merge:**
-    -   Select a difference block to reveal merge controls.
-    -   Use the arrow buttons to move changes between sides.
-    -   Toggle **Word Wrap** or **View Mode** in the Settings panel for better visibility.
-4.  **Export:** Copy the final result back to your clipboard using the quick-copy buttons.
+### Text Compare
+
+1. Paste or type the original text in the left panel and the modified text in the right panel.
+2. Click **Check it!** to generate the comparison.
+3. Review highlighted differences, adjust options, and use merge controls when needed. Hide unchanged lines, turn off case sensitivity, or add ignore rules to focus on the changes that matter.
+4. Use the Transform menu above each input to normalize text or format JSON, and keep editing: turn on Live input editor to refresh the comparison as you type, or use Update when the comparison is out of date.
+5. Copy the final text back to your clipboard.
+
+### Image Compare
+
+1. Load two images or screenshots.
+2. Choose a comparison mode such as side-by-side, slider, fade, heatmap, or threshold.
+3. Adjust alignment and visual settings to inspect differences clearly.
+
+### Markdown Preview
+
+1. Open the Markdown preview page.
+2. Write or paste Markdown in the editor.
+3. Use formatting tools, line-numbered editing, live preview, Mermaid diagrams, KaTeX formulas, and session undo/redo.
+4. Reset to the default text whenever you want a clean sample document.
+
+### QR Code Generator
+
+1. Open **QR code generator** and choose Website, Text, Wi-Fi, Email, or Phone.
+2. Enter the content and adjust colors, error correction, or PNG size if needed.
+3. Check the preview, then download a PNG or SVG file. The QR code is static, and its content and settings are not saved or sent to a server.
+4. Scan the exported file before sharing or printing it. A Wi-Fi QR code reveals its password to anyone who can scan it.
+5. To read a QR code, click **Scan image**, paste an image with Ctrl+V, or drop it anywhere on the page.
 
 ## 💻 Local Development
 
 To run this project locally, you need Node.js installed on your machine.
 
-1.  Clone the repository.
-2.  Navigate to the project folder:
-    ```bash
-    cd comparecode-web
-    ```
-3.  Install dependencies:
-    ```bash
-    npm install
-    ```
-4.  Start the development server:
-    ```bash
-    npm run dev
-    ```
-5.  Open `http://localhost:3000` in your browser.
+1. Clone the repository.
+2. Navigate to the project folder:
+   ```bash
+   cd comparecode-web
+   ```
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+4. Start the development server:
+   ```bash
+   npm run dev
+   ```
+5. Open `http://localhost:3000` in your browser.
+
+### Deployment versions
+
+Vercel builds automatically embed a UTC timestamp such as `Version 20261008.1510`; restarting an existing build preserves it. Local development and verification builds show `Development`. `vercel.json` selects `npm run build`; enable access to System Environment Variables in Vercel. See [deployment versioning](docs/deployment-versioning.md) for the build contract and setup.
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) file for details on how to get started.
+We welcome contributions. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to get started.
+
+User-visible changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE) - see the LICENSE file for details.
+This project is licensed under the [MIT License](LICENSE). See the LICENSE file for details.

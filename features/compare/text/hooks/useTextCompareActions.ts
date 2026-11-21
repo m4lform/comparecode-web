@@ -1,4 +1,5 @@
 import { useEditorStore } from "@/features/compare/text/store/useTextStore";
+import { reportHistoryWriteError } from "@/store/reportHistoryWriteError";
 import { useEditorUIStore } from "@/features/compare/text/store/useTextUIStore";
 import { HistoryService } from "@/services/historyService";
 import { CompareSettings } from "@/types/settings";
@@ -6,18 +7,24 @@ import { BlockType } from "@/features/compare/text/types/diff";
 
 export function useTextCompareActions() {
   const executeCompare = async (settings: CompareSettings, saveToHistory: boolean, preserveInputState: boolean = false) => {
-    const { leftText, rightText, compare, setHistorySessionId, bumpHistoryRefreshKey } = useEditorStore.getState();
-    const { setIsInputExpanded, setIsComparing, isInputExpanded } = useEditorUIStore.getState();
+    const { leftText, rightText, compare, trackHistorySession, bumpHistoryRefreshKey } = useEditorStore.getState();
+    const { setIsInputExpanded, setIsComparing, isInputExpanded, resetUnchangedExpansions, setIsLiveUpdatePaused } = useEditorUIStore.getState();
 
+    resetUnchangedExpansions();
+    setIsLiveUpdatePaused(false);
     setIsComparing(true);
     await compare(settings);
     setIsInputExpanded(preserveInputState ? isInputExpanded : false);
     setIsComparing(false);
 
     if (saveToHistory && (leftText || rightText)) {
-      const sessionId = await HistoryService.addAsync(leftText, rightText);
-      setHistorySessionId(sessionId);
-      bumpHistoryRefreshKey();
+      useEditorStore.getState().markHistorySnapshot(leftText, rightText);
+      try {
+        await trackHistorySession(HistoryService.addAsync(leftText, rightText));
+        bumpHistoryRefreshKey();
+      } catch (error) {
+        reportHistoryWriteError(error);
+      }
     }
   };
 
@@ -30,22 +37,28 @@ export function useTextCompareActions() {
   };
 
   const executeSwap = async (settings: CompareSettings) => {
-    const { swapTexts, currentBlockIndex, selectBlock, leftText, rightText, historySessionId, setHistorySessionId, bumpHistoryRefreshKey } = useEditorStore.getState();
+    const { swapTexts, currentBlockIndex, selectBlock, leftText, rightText, queueHistoryWrite, bumpHistoryRefreshKey, prepareManualEdit, writeManualEdit } = useEditorStore.getState();
     const prevIndex = currentBlockIndex;
     const beforeLeft = leftText;
     const beforeRight = rightText;
+    const manualEdit = prepareManualEdit({ left: rightText, right: leftText });
 
     swapTexts();
     const { leftText: afterLeft, rightText: afterRight } = useEditorStore.getState();
 
-    let sessionId = historySessionId;
-    if (!sessionId) {
-      sessionId = await HistoryService.createMergeSessionAsync(beforeLeft, beforeRight);
-      setHistorySessionId(sessionId);
-    }
+    await queueHistoryWrite(async () => {
+      const { historySessionId, setHistorySessionId } = useEditorStore.getState();
+      let sessionId = historySessionId;
+      if (!sessionId) {
+        sessionId = await HistoryService.createMergeSessionAsync(beforeLeft, beforeRight);
+        setHistorySessionId(sessionId);
+      } else {
+        await writeManualEdit(sessionId, manualEdit);
+      }
 
-    await HistoryService.appendSwapStepAsync(sessionId, beforeLeft, beforeRight, afterLeft, afterRight);
-    bumpHistoryRefreshKey();
+      await HistoryService.appendSwapStepAsync(sessionId, beforeLeft, beforeRight, afterLeft, afterRight);
+      bumpHistoryRefreshKey();
+    }).catch(reportHistoryWriteError);
 
     await executeCompare(settings, false, true);
 
@@ -53,7 +66,7 @@ export function useTextCompareActions() {
       const { comparisonResult } = useEditorStore.getState();
 
       if (comparisonResult) {
-        const selectableBlocks = comparisonResult.blocks.filter(b => b.kind !== BlockType.Unchanged && !(settings.ignoreWhitespace && b.isWhitespaceChange));
+        const selectableBlocks = comparisonResult.blocks.filter(b => b.kind !== BlockType.Unchanged);
 
         if (prevIndex <= selectableBlocks.length) {
           selectBlock(selectableBlocks[prevIndex - 1].id);

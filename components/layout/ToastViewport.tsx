@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 import { MdCheckCircleOutline, MdClose, MdErrorOutline, MdInfoOutline, MdRedo, MdUndo, MdWarningAmber } from "react-icons/md";
 import { ToastItem, useToastStore } from "@/store/useToastStore";
 import { cn } from "@/utils/uiHelpers";
+import { IconButton } from "@/components/ui/IconButton";
+import { Button } from "@/components/ui/Button";
 
 function getToneClasses(tone: ToastItem["tone"]): string {
   if (tone === "success") {
@@ -12,14 +14,14 @@ function getToneClasses(tone: ToastItem["tone"]): string {
   }
 
   if (tone === "error") {
-    return "border-danger/40 bg-danger-bg text-text-primary";
+    return "border-destructive/40 bg-destructive-surface text-text-primary";
   }
 
   if (tone === "warning") {
     return "border-amber-500/40 bg-amber-500/10 text-text-primary";
   }
 
-  return "border-blue-500/40 bg-blue-500/10 text-text-primary";
+  return "border-info-border bg-info-bg text-text-primary";
 }
 
 function getDefaultIcon(tone: ToastItem["tone"]): ToastItem["icon"] {
@@ -44,14 +46,14 @@ function getIconClasses(tone: ToastItem["tone"]): string {
   }
 
   if (tone === "error") {
-    return "text-danger";
+    return "text-destructive";
   }
 
   if (tone === "warning") {
     return "text-amber-500";
   }
 
-  return "text-blue-500";
+  return "text-info";
 }
 
 function ToastIcon({ toast }: { toast: ToastItem }) {
@@ -124,16 +126,23 @@ function ToastCard({ toast }: { toast: ToastItem }) {
     >
       <ToastIcon toast={toast} />
       <span className="min-w-0 flex-1 leading-5">{toast.message}</span>
+      {toast.action && (
+        <Button size="sm" variant="outline" className="-my-0.5 shrink-0" onClick={() => {
+          toast.action?.onAction();
+          dismissToast(toast.id);
+        }}>
+          {toast.action.label}
+        </Button>
+      )}
       {toast.isDismissible && (
-        <button
-          type="button"
+        <IconButton
           onClick={() => dismissToast(toast.id)}
-          className="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+          className="ml-1 size-5 rounded-sm"
           aria-label="Dismiss notification"
           title="Dismiss notification"
         >
           <MdClose className="h-4 w-4" aria-hidden="true" />
-        </button>
+        </IconButton>
       )}
     </div>
   );

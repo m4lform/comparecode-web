@@ -1,35 +1,15 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import "katex/dist/katex.min.css";
 import "./globals.css";
 import { SettingsProvider } from "@/components/layout/SettingsProvider";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
 import { GlobalTooltip } from "@/components/layout/GlobalTooltip";
 import { ToastViewport } from "@/components/layout/ToastViewport";
-import { defaultDescription, SITE_LOGO_PATH, SITE_NAME, SITE_URL } from "@/config/seo";
+import { buildThemeInitScript } from "@/config/themes";
+import { defaultDescription, SITE_ICON_PATH, SITE_LOGO_PATH, SITE_NAME, SITE_URL } from "@/config/seo";
 
-const THEME_INIT_SCRIPT = `
-  (function () {
-    try {
-      var raw = localStorage.getItem("comparecode_settings");
-      if (!raw) {
-        return;
-      }
-
-      var parsed = JSON.parse(raw);
-      var theme = parsed && parsed.theme;
-
-      if (!theme) {
-        return;
-      }
-
-      var darkThemes = ["dark", "dracula", "monokai", "solarized-dark", "nord"];
-      document.documentElement.setAttribute("data-theme", theme);
-      document.documentElement.style.colorScheme = darkThemes.indexOf(theme) >= 0 ? "dark" : "light";
-    } catch (_) {
-      // no-op
-    }
-  })();
-`;
+const THEME_INIT_SCRIPT = buildThemeInitScript();
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -45,7 +25,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   applicationName: SITE_NAME,
   title: {
-    default: "CompareCode - Free Online Code and Image Comparison Tool",
+    default: "CompareCode - Free Browser Tools for Code, Images, Markdown, and QR Codes",
     template: "%s"
   },
   description: defaultDescription,
@@ -55,7 +35,7 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: SITE_NAME,
-    title: "CompareCode - Free Online Code and Image Comparison Tool",
+    title: "CompareCode - Free Code, Image, Markdown, and QR Code Tools",
     description: defaultDescription,
     url: SITE_URL,
     images: [
@@ -69,13 +49,13 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    title: "CompareCode - Free Online Code and Image Comparison Tool",
+    title: "CompareCode - Free Code, Image, Markdown, and QR Code Tools",
     description: defaultDescription,
     images: [SITE_LOGO_PATH]
   },
   icons: {
-    icon: SITE_LOGO_PATH,
-    shortcut: SITE_LOGO_PATH,
+    icon: { url: SITE_ICON_PATH, type: "image/svg+xml", sizes: "any" },
+    shortcut: SITE_ICON_PATH,
     apple: SITE_LOGO_PATH
   }
 };

@@ -1,25 +1,77 @@
 "use client";
 
-import { useEffect } from "react";
-import { MdKeyboardArrowLeft, MdKeyboardArrowRight, MdKeyboardArrowUp, MdKeyboardArrowDown, MdTune, MdBorderColor } from "react-icons/md";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { MdKeyboardArrowUp, MdKeyboardArrowDown, MdTune, MdBorderColor, MdHistory, MdCode } from "react-icons/md";
+import { ToolWorkspaceShell } from "@/components/layout/ToolWorkspaceShell";
+import { FileDropZone } from "@/components/ui/FileDropZone";
+import { Button } from "@/components/ui/Button";
+import { useOptionsPanelShortcut } from "@/components/layout/useOptionsPanelShortcut";
 import { useEditorStore } from "@/features/compare/text/store/useTextStore";
 import { useEditorUIStore } from "@/features/compare/text/store/useTextUIStore";
-import { OptionsView } from "./OptionsView";
+import { OptionsView, TextTestButton } from "./OptionsView";
+import { CompactTextOptions } from "./CompactTextOptions";
 import { MergeHistoryView } from "./MergeHistoryView";
+import { useRealtimeCompare } from "@/features/compare/text/hooks/useRealtimeCompare";
 import { InputView } from "./InputView";
 import { ComparisonView } from "@/features/compare/text/components/diff/ComparisonView";
 import { cn } from "@/utils/uiHelpers";
-import { MdHistory } from "react-icons/md";
-import { isEditableTarget } from "@/features/compare/text/utils/keyboard";
+import { isEditableTarget, isWorkspaceShortcutBlocked } from "@/utils/workspaceKeyboard";
+import { readTextCompareFile, TextImportError, TEXT_IMPORT_ACCEPT } from "@/features/compare/text/services/textFileImport";
+import { useToastStore } from "@/store/useToastStore";
 
 export function EditorView() {
-  const { comparisonResult } = useEditorStore();
+  const { comparisonResult, leftText, rightText, importText } = useEditorStore();
+  const pushToast = useToastStore((state) => state.pushToast);
+  useRealtimeCompare();
+  const leftFileRef = useRef<HTMLInputElement>(null);
+  const rightFileRef = useRef<HTMLInputElement>(null);
+  const importGeneration = useRef({ left: 0, right: 0 });
+  const [dropSide, setDropSide] = useState<"left" | "right">("left");
+  useEffect(() => () => {
+    importGeneration.current.left += 1;
+    importGeneration.current.right += 1;
+  }, []);
+  const handleImportFiles = useCallback(async (side: "left" | "right", files: FileList) => {
+    const generation = ++importGeneration.current[side];
+    if (files.length !== 1) {
+      pushToast({ message: "Choose one file for each panel.", tone: "error" });
+      return;
+    }
+    try {
+      const text = await readTextCompareFile(files[0]);
+      if (generation !== importGeneration.current[side]) return;
+      importText(side, text);
+      useEditorUIStore.getState().setIsInputExpanded(true);
+      pushToast({ message: `${side === "left" ? "Original" : "Modified"} file imported.`, tone: "success" });
+    } catch (error) {
+      if (generation !== importGeneration.current[side]) return;
+      pushToast({ message: error instanceof TextImportError ? error.message : "The file could not be imported.", tone: "error" });
+    }
+  }, [importText, pushToast]);
+  const openFilePicker = useCallback((side: "left" | "right") => {
+    (side === "left" ? leftFileRef : rightFileRef).current?.click();
+  }, []);
+  const hasInput = Boolean(leftText || rightText);
+  const showTextTest = useEditorUIStore((state) => state.showTextTest);
   const { isInputExpanded, toggleInputPanel, isOptionsPanelOpen, setIsOptionsPanelOpen, optionsPanelTab, setOptionsPanelTab } = useEditorUIStore();
   const hasResult = comparisonResult && comparisonResult.blocks.length > 0;
   const isInputEditorToggleDisabled = !hasResult && isInputExpanded;
+  const toggleOptionsPanel = useCallback(() => {
+    if (!hasInput) return;
+    const uiState = useEditorUIStore.getState();
+    uiState.setIsOptionsPanelOpen(uiState.optionsPanelTab !== "options" || !uiState.isOptionsPanelOpen);
+    uiState.setOptionsPanelTab("options");
+  }, [hasInput]);
+
+  useEffect(() => {
+    if (!hasInput && isOptionsPanelOpen && optionsPanelTab === "options") setIsOptionsPanelOpen(false);
+  }, [hasInput, isOptionsPanelOpen, optionsPanelTab, setIsOptionsPanelOpen]);
+
+  useOptionsPanelShortcut(toggleOptionsPanel);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isWorkspaceShortcutBlocked(event)) return;
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
         return;
       }
@@ -30,7 +82,7 @@ export function EditorView() {
 
       const key = event.key.toLowerCase();
 
-      if (key !== "e" && key !== "o") {
+      if (key !== "e") {
         return;
       }
 
@@ -44,12 +96,6 @@ export function EditorView() {
 
       event.preventDefault();
 
-      if (key === "o") {
-        const uiState = useEditorUIStore.getState();
-        uiState.setIsOptionsPanelOpen(!uiState.isOptionsPanelOpen);
-        return;
-      }
-
       toggleInputPanel();
     };
 
@@ -60,122 +106,75 @@ export function EditorView() {
   }, [isInputEditorToggleDisabled, toggleInputPanel]);
 
   return (
-    <div className="flex h-full min-h-0 w-full overflow-hidden bg-bg-primary relative">
+    <ToolWorkspaceShell
+      contentClassName="overflow-y-auto custom-scrollbar"
+      isPanelOpen={isOptionsPanelOpen}
+      onPanelOpenChange={setIsOptionsPanelOpen}
+      activePanelTab={optionsPanelTab}
+      onPanelTabChange={setOptionsPanelTab}
+      toolTitle="Text compare"
+      toolIcon={MdCode}
+      compactControls={<div className="flex min-w-0 flex-1 items-center gap-3 self-stretch">
+        {showTextTest && <TextTestButton />}
+        {!(isOptionsPanelOpen && optionsPanelTab === "options") && <CompactTextOptions disabled={!hasInput} />}
+      </div>}
+      tabs={[
+        { value: "options", title: "Options", icon: MdTune, content: <OptionsView />, isDisabled: !hasInput },
+        { value: "history", title: "Merge history", placement: "right", icon: MdHistory, content: <MergeHistoryView /> }
+      ]}
+    >
+      <input ref={leftFileRef} type="file" accept={TEXT_IMPORT_ACCEPT} className="hidden" onChange={(event) => { if (event.target.files) void handleImportFiles("left", event.target.files); event.target.value = ""; }} />
+      <input ref={rightFileRef} type="file" accept={TEXT_IMPORT_ACCEPT} className="hidden" onChange={(event) => { if (event.target.files) void handleImportFiles("right", event.target.files); event.target.value = ""; }} />
       <div
         className={cn(
-          "flex flex-col bg-bg-secondary transition-[width] duration-(--duration-medium) overflow-hidden h-full shrink-0 z-10",
-          "max-sm:absolute max-sm:left-0 max-sm:top-0 max-sm:z-40 max-sm:h-full max-sm:shadow-lg max-sm:transition-transform max-sm:duration-(--duration-medium)",
-          isOptionsPanelOpen
-            ? "w-64 border-r border-border-default max-sm:translate-x-0"
-            : "w-0 border-r-0 max-sm:-translate-x-full"
+          "flex min-h-0 flex-col bg-bg-primary relative",
+          hasResult || !isInputExpanded ? "min-h-48 flex-1 overflow-hidden" : "shrink-0 h-0"
         )}
       >
-        <div className="flex w-64 flex-col h-full shrink-0">
-          <div className="flex items-center justify-between border-b border-border-default px-4 h-(--header-height) shrink-0 bg-bg-secondary">
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setOptionsPanelTab("options")}
-                className={cn(
-                  "flex items-center justify-center rounded p-2 transition-colors duration-(--duration-short)",
-                  optionsPanelTab === "options"
-                    ? "bg-hover-overlay text-accent-primary"
-                    : "text-text-secondary hover:bg-hover-overlay hover:text-text-primary"
-                )}
-                title="Options"
-              >
-                <MdTune className="text-xl" />
-              </button>
-              <button
-                onClick={() => setOptionsPanelTab("history")}
-                className={cn(
-                  "flex items-center justify-center rounded p-2 transition-colors duration-(--duration-short)",
-                  optionsPanelTab === "history"
-                    ? "bg-hover-overlay text-accent-primary"
-                    : "text-text-secondary hover:bg-hover-overlay hover:text-text-primary"
-                )}
-                title="Merge History"
-              >
-                <MdHistory className="text-xl" />
-              </button>
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {optionsPanelTab === "options" ? <OptionsView /> : <MergeHistoryView />}
-          </div>
+        <FileDropZone
+          className="flex min-h-0 flex-1 flex-col"
+          label={<div className="grid h-full w-full grid-cols-2 text-center"><span className={cn("flex items-center justify-center", dropSide === "left" && "bg-accent/15")}>Drop into original</span><span className={cn("flex items-center justify-center", dropSide === "right" && "bg-accent/15")}>Drop into modified</span></div>}
+          onFileDrag={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            setDropSide(event.clientX < bounds.left + bounds.width / 2 ? "left" : "right");
+          }}
+          onFilesDrop={(files, event) => {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            void handleImportFiles(event.clientX < bounds.left + bounds.width / 2 ? "left" : "right", files);
+          }}
+        >
+          <ComparisonView onImport={openFilePicker} />
+        </FileDropZone>
+      </div>
+
+      <div className="shrink-0 border-t border-border-default bg-bg-secondary px-2 py-1.5 sm:px-3 sm:py-2">
+        <div className="flex items-center justify-center">
+          <Button size="sm"
+            onClick={toggleInputPanel}
+            disabled={isInputEditorToggleDisabled}
+            title={isInputExpanded ? "Hide input editor (E)" : "Show input editor (E)"}
+          >
+            <MdBorderColor className="text-base shrink-0" />
+            <span>Input editor</span>
+            {isInputExpanded ? <MdKeyboardArrowDown className="text-xl shrink-0" /> : <MdKeyboardArrowUp className="text-xl shrink-0" />}
+          </Button>
         </div>
       </div>
 
-      {isOptionsPanelOpen && (
-        <div
-          className="fixed inset-0 bg-black/30 z-30 sm:hidden"
-          onClick={() => setIsOptionsPanelOpen(false)}
-        />
-      )}
-
-      <div className="fixed bottom-3 right-2 z-40 flex flex-col gap-2 rounded-lg border border-border-default bg-bg-secondary/95 p-1 shadow-lg backdrop-blur-sm sm:hidden">
-        <button
-          onClick={() => setIsOptionsPanelOpen(!isOptionsPanelOpen)}
-          className="grid h-8 w-11 grid-cols-2 place-items-center rounded-md bg-accent-primary px-0.5 text-white shadow-sm transition-colors duration-(--duration-short) hover:bg-accent-hover"
-          title={isOptionsPanelOpen ? "Close Options" : "Open Options"}
-        >
-          <MdTune className="text-xl shrink-0" />
-          {isOptionsPanelOpen ? <MdKeyboardArrowLeft className="text-2xl shrink-0" /> : <MdKeyboardArrowRight className="text-2xl shrink-0" />}
-        </button>
+      <div
+        inert={!isInputExpanded}
+        className={cn(
+          "flex min-h-0 flex-col shrink-0 overflow-hidden bg-bg-primary z-10 transition-[height,min-height,opacity] duration-200 ease-in-out motion-reduce:transition-none",
+          isInputExpanded
+            ? (hasResult
+              ? "h-1/2 min-h-64 border-t border-border-default opacity-100"
+              : "min-h-64 flex-1 opacity-100")
+            : "h-0 min-h-0 opacity-0"
+        )}
+      >
+        <InputView onImportFiles={handleImportFiles} onOpenFile={openFilePicker} />
       </div>
-
-      <div className="z-20 hidden w-16 shrink-0 flex-col items-center gap-2 border-r border-border-default bg-bg-secondary px-1 py-2 sm:flex">
-        <button
-          onClick={() => setIsOptionsPanelOpen(!isOptionsPanelOpen)}
-          className="grid h-8 w-full grid-cols-2 place-items-center rounded-md bg-accent-primary px-0.5 text-white shadow-sm transition-colors duration-(--duration-short) hover:bg-accent-hover"
-          title={isOptionsPanelOpen ? "Close Options" : "Open Options"}
-        >
-          <MdTune className="text-xl shrink-0" />
-          {isOptionsPanelOpen ? <MdKeyboardArrowLeft className="text-2xl shrink-0" /> : <MdKeyboardArrowRight className="text-2xl shrink-0" />}
-        </button>
-      </div>
-
-      <div className="flex flex-1 min-h-0 flex-col overflow-hidden relative z-0">
-        <div
-          className={cn(
-            "flex flex-col bg-bg-primary relative",
-            hasResult || !isInputExpanded ? "flex-1 overflow-hidden" : "shrink-0 h-0"
-          )}
-        >
-          <ComparisonView />
-        </div>
-
-        <div className="shrink-0 border-t border-border-default bg-bg-secondary px-2 py-1.5 sm:px-3 sm:py-2">
-          <div className="flex items-center justify-center">
-            <button
-              onClick={toggleInputPanel}
-              disabled={isInputEditorToggleDisabled}
-              className={cn(
-                "inline-flex items-center gap-2 rounded-md bg-accent-primary px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors duration-(--duration-short)",
-                isInputEditorToggleDisabled ? "cursor-not-allowed opacity-60" : "hover:bg-accent-hover"
-              )}
-              title={isInputExpanded ? "Hide Input Editor" : "Show Input Editor"}
-            >
-              <MdBorderColor className="text-base shrink-0" />
-              <span>Input Editor (E)</span>
-              {isInputExpanded ? <MdKeyboardArrowDown className="text-xl shrink-0" /> : <MdKeyboardArrowUp className="text-xl shrink-0" />}
-            </button>
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            "flex flex-col shrink-0 transition-[height,opacity,min-height] duration-(--duration-medium) ease-in-out overflow-hidden bg-bg-primary z-10",
-            isInputExpanded
-              ? (hasResult
-                ? "max-sm:h-[calc(100dvh-var(--header-height))] sm:h-(--input-panel-height) sm:min-h-(--input-panel-min-height) border-t border-border-default shadow-sm opacity-100"
-                : "flex-1 opacity-100")
-              : "h-0 min-h-0 opacity-0"
-          )}
-        >
-          <InputView />
-        </div>
-      </div>
-    </div>
+    </ToolWorkspaceShell>
   );
 }
 

@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 
-export const SITE_URL = "https://comparecodeweb.com";
+export const SITE_URL = "https://www.comparecodeweb.com";
 export const SITE_NAME = "CompareCode";
 export const SITE_LOGO_PATH = "/brand/comparecode-logo.png";
+export const SITE_ICON_PATH = "/brand/comparecode-logo.svg";
 
-export const defaultDescription = "CompareCode is a free, open-source comparison tool for code, text, and images. Compare changes in your browser with local processing and no account required.";
+export const defaultDescription = "CompareCode is a free, open-source browser tool for comparing code, text, and images, previewing Markdown, and creating QR codes locally without an account.";
 
 export function absoluteUrl(path: string): string {
   if (path === "/") {
@@ -55,7 +56,7 @@ export function createPageMetadata({ title, description, path }: PageMetadataInp
 
 export const homeMetadata = createPageMetadata({
   path: "/",
-  title: "CompareCode - Free Online Code and Image Comparison Tool",
+  title: "CompareCode - Free Code, Image, Markdown, and QR Tools",
   description: defaultDescription
 });
 
@@ -69,6 +70,18 @@ export const imageMetadata = createPageMetadata({
   path: "/image",
   title: "Online Image Comparison Tool - Visual Diff Checker | CompareCode",
   description: "Compare screenshots and images visually with side-by-side, fade, slider, heatmap, perceptual, threshold, and alignment tools."
+});
+
+export const markdownMetadata = createPageMetadata({
+  path: "/markdown",
+  title: "Markdown Preview Tool - Live Markdown Editor and Renderer | CompareCode",
+  description: "Write Markdown with live preview, line numbers, local draft persistence, GitHub-style formatting, rich paste support, Mermaid diagrams, KaTeX formulas, and session undo/redo."
+});
+
+export const qrMetadata = createPageMetadata({
+  path: "/qr",
+  title: "Free QR Code Generator - Create PNG and SVG Codes | CompareCode",
+  description: "Create QR codes for links, text, Wi-Fi, email, and phone numbers, or scan one from an image. Free, private, and runs in your browser."
 });
 
 export const settingsMetadata = createPageMetadata({
@@ -95,8 +108,13 @@ export const softwareApplicationJsonLd = {
     "Text comparison",
     "Code diff",
     "Image comparison",
+    "Markdown preview",
+    "Live Markdown editor",
+    "Mermaid and KaTeX rendering",
     "Local comparison history",
     "Merge controls",
-    "Image alignment"
+    "Image alignment",
+    "QR code generation",
+    "QR code scanning from images"
   ]
 };

@@ -1,0 +1,71 @@
+# Shared UI components
+
+## Ownership and defaults
+
+`components/ui` owns reusable controls and interactions. Feature modules own product rules, parsing, state, and feature-specific compositions. Keep the existing PascalCase names; a second `Cc*` component family or compatibility wrappers would create competing owners.
+
+| Need | Owner | Default and extension points |
+| --- | --- | --- |
+| Labelled action | `Button` | `primary`, `md`, `type="button"`; native button props, left/right icons |
+| Icon-only action | `IconButton` | `ghost`, `md`, square; shared button variants, circle shape, explicit active state |
+| Restore defaults | `ResetButton` | Icon-only, `sm`; dirty styling and caller-owned reset handler/scope |
+| Text, URL, password, number input | `Input` | `md`; native input props, ref, shared field appearance |
+| Multiline form input | `Textarea` | `md`, five rows, vertically resizable; native textarea props |
+| Field label and message | `FormField` | Label plus optional description/error; render function supplies control ID and message association |
+| Collapsed choice | `SelectDropdown` | `md`; typed string values, disabled state, shared popover positioning, optional labelled option groups |
+| Visible choices | `SelectionBar` | `sm`, inline, single selection; multiple selection and stacked content when needed |
+| Boolean, range, color | `Checkbox`, `Switch`, `Slider`, `ColorInput` | Preserve their native interaction and feature-owned values; `ColorInput` composes `Input` and `FormField` |
+| Anchored arbitrary content | `Popover` | Portal positioning, outside-click dismissal, Escape, inert-trigger handling; no menu role by default |
+| Action menu | `PopoverMenu`, `MenuItem` | `Popover` composition with menu semantics, initial focus and enabled-item arrow/Home/End navigation |
+| Modal content | `Dialog`, `DialogHeader` | Controlled native modal; focus containment/return, Escape cancellation, scrollable viewport bounds |
+| Notification | `useToastStore`, `components/layout/ToastViewport.tsx` | Tone, icon, duration, dedupe key and dismiss button. An optional `action` renders one labelled outline button that runs once and dismisses the toast |
+| Tool action row | `WorkspaceToolbar` | Inline surface; `card` for a standalone bordered toolbar |
+| Zoom bar | `ZoomControls` | Zoom out, logarithmic slider, zoom in, percentage, Fit and 100%; the caller owns the scale, limits and fit state |
+| Settings group | `components/settings/OptionsSection.tsx` | Explicit `compact` density; `comfortable` for page sections. Description does not select the density |
+| Page heading and gutters | `components/layout/PageHeader.tsx`, `PageContent.tsx` | Shared Home, QR, History and Settings page gutters; Home retains its own welcome heading |
+
+`controlStyles.ts` is the canonical owner of the button variants, shared focus/disabled classes and the `sm`/`md`/`lg` control scale. At the usual 16px root, minimum control heights are 32/36/44 CSS pixels. Labelled controls may grow with content; icon buttons have square 2/2.25/2.75rem geometry. Icon slots inherit the corresponding default icon size. These are scalable rem-based sizes, not persisted pixel settings. Follow [UI sizing and units](ui-sizing.md).
+
+Solid fills use the theme content tokens from the [theming contract](theming.md): `primary` uses `bg-accent text-accent-content`, `danger` uses `bg-destructive text-destructive-content`, and `success` uses `bg-success text-success-content`. The `danger` and `dangerGhost` variant names stay as the component API, while their colors come from the `destructive` tokens. Never place `text-white` or another fixed color on a theme fill. Text fields, the select trigger, the switch track and the checkbox use `border-strong`, while panel dividers keep `border-default`.
+
+`SelectDropdown` options may carry a `group` label. Consecutive options with the same label render inside a labelled `role="group"`. Every group after the first is separated by a divider line. Group labels are not selectable and keyboard navigation still moves through the flat option list.
+
+## Composition and overrides
+
+Home, Settings, History and QR use `PageContent` for the same `max-w-7xl` centered container, responsive `p-3 sm:p-5 lg:p-7` gutters, scroll styling and stable scrollbar space. Do not add a parallel page-width or gutter rule in Home CSS. Home's inner container queries control its cards, heading and FAQ using the space remaining inside the shared gutters.
+
+`controlStyles.ts` also owns `linkColors` and `linkIcon` for native links. The `neutral` palette follows theme text colors; `support` uses the theme `support-heart` color with its `support-heart-hover` state for hover and keyboard focus. Apply the palette to the link so its text and SVG icons inherit the same color. Home and sidebar project links share the `linkIcon` 1.25rem size; consumers own their surrounding layout.
+
+Start with the semantic component and its size/variant props. Keep `className` for container layout, responsive visibility and justified exceptions. Repeated height, padding, radius, focus or color overrides should move into the existing owner rather than become a feature-local style recipe. Do not add a variant solely to reproduce one incidental historical difference.
+
+Use `Button` for text with optional icons and `IconButton` for icon-only actions. There is no `Button size="icon"` or duplicate `toolbar` button variant. `ghost` is the subdued action style. Icon-only controls retain their accessible name and applicable tooltip; navigation controls remain tooltip-free. `isActive` controls appearance; the caller supplies the appropriate pressed/expanded/selected semantics.
+
+The reset handler and dirty calculation stay with the setting or feature. `OptionsSection` owns section-reset composition; `ResetButton` owns the icon control appearance. Compact sections use a 1.75rem reset control to preserve their header height; section spacing supplies the gap above controls without additional first-control margins. The per-color Restore text action is a `Button`, separate from section resets.
+
+Use `FormField` to associate a visible label and optional message without nesting unrelated controls inside one label:
+
+```tsx
+<FormField label="Website URL" error={error}>
+  {field => <Input {...field} type="url" value={url} onChange={event => setUrl(event.target.value)} />}
+</FormField>
+```
+
+Parsing, clamping, validation rules and persistence remain with the feature. An image-alignment number field can compose `Input` with a suffix while retaining its draft/commit/cancel behavior. Text and Markdown document editors remain specialized editors, not generic form textareas.
+
+`Popover` owns geometry and dismissal, while `SelectDropdown` owns choice behavior and `PopoverMenu` owns action-menu navigation. Forms inside popovers must not acquire a menu role. Popovers mark their content as tool controls so workspace shortcuts do not act underneath them. Popups and global tooltips portal into the nearest dialog when necessary to remain in its top layer. Formatting actions retain their feature-owned editor focus/selection restoration.
+
+Use controlled `Dialog` for modals. The owner chooses whether cancellation is permitted during pending work and what closing means. Native close events must not undo a reopened dialog during React strict effects. A field consuming Escape must prevent its default before the dialog handles cancellation. The navigation drawer keeps its existing native-dialog lifecycle because it also coordinates breakpoints, route changes and history navigation.
+
+`WorkspaceSidebarProvider` scopes the mobile drawer's open state to the committed pathname and clears it when the route changes, including browser history navigation. A destination selection keeps the drawer and backdrop visible until that commit; it must not expose the previous workspace while the router is loading. `NavigationSidebar` tracks the navigation transition for a pending indicator on the selected mobile destination. Its active-destination highlight is one shared indicator that CSS anchor positioning attaches to the committed destination, so it slides between destinations without measured or hard-coded offsets. Browsers without anchor positioning keep the static highlight on the destination itself. The mobile Home logo uses the same lifecycle, preserving its push navigation; destination buttons retain replace navigation. Selecting the current route, Escape, the close button, backdrop dismissal and switching to desktop still close immediately. Native close events must not close a newly reopened drawer, and dismissal restores focus to the connected menu trigger.
+
+Do not merge `PageHeader`, `WorkspaceToolbar`, `ToolWorkspaceShell` and mobile navigation into a universal header: their roles differ. Keep canvas handles, resize separators, navigation destinations, selectable history rows and diff annotations feature-specific where their geometry or semantics require it. Reuse primitives inside those compositions where appropriate.
+
+## Development preview and validation
+
+`/dev/ui` renders `components/dev/UiComponentsPreview.tsx` using the real controls. It demonstrates sizes, variants, disabled/active/error states, fields, resets, toolbars, popovers and dialogs. Its theme control uses the existing theme selector; no separate theme state or storage schema exists. The route returns not found outside development and is absent from product navigation and the sitemap.
+
+When changing shared defaults, inspect representative Text, Image, Markdown, QR, History and Settings consumers, plus the navigation shell. Validate keyboard activation, form submission, disabled controls, menu selection, Escape, modal focus, tooltip/popup layering, and feature-specific reset scopes. Keep behavior tests under `components/ui/__tests__` and feature integration tests with their owners.
+
+Use an isolated browser to inspect light/dark themes, narrow layouts, larger root fonts, and popup/dialog placement. Compare before/after screenshots with the same viewport, data and theme when assessing visual drift. Run the applicable repository lint, test and build checks; DOM tests alone do not establish native modal focus or responsive geometry.
+
+For mobile navigation changes, hold a destination's route response and sample rendered frames to verify that the old workspace is never uncovered before the destination commits. Also check cached navigation, the Home logo, repeated destination selections, current-route dismissal, manual dismissal while pending, browser history, responsive breakpoint changes and reopening after navigation.
